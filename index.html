@@ -615,7 +615,14 @@ main{
   font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:800;
   letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);
 }
-.outcome-value.is-sweep{color:var(--accent);}
+/* Sweep — highest achievement, brightest treatment */
+.outcome-value.is-sweep{
+  color:#ffe066;
+  font-size:16px;
+  font-weight:900;
+  letter-spacing:0.1em;
+  text-shadow:0 0 12px rgba(255,224,102,0.5), 0 0 24px rgba(255,224,102,0.2);
+}
 .outcome-value.is-split{color:var(--blue);}
 .outcome-value.is-win{color:var(--green);}
 .card-total-score{
@@ -1009,7 +1016,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.42';
+const APP_VERSION  = '2026.05.28.45';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1236,13 +1243,13 @@ class Series {
     const awayLabel = this.away.abbr || teamAbbr(this.away.name);
     const homeLabel = this.home.abbr || teamAbbr(this.home.name);
     if(isDone){
-      if(awayW===total)return{label:`${awayLabel} Sweep`,type:'sweep',awayW,homeW};
-      if(homeW===total)return{label:`${homeLabel} Sweep`,type:'sweep',awayW,homeW};
+      if(awayW===total)return{label:`${awayLabel} Swept the Series`,type:'sweep',awayW,homeW};
+      if(homeW===total)return{label:`${homeLabel} Swept the Series`,type:'sweep',awayW,homeW};
       // Split = exactly even wins (only possible in even-game series: 1-1, 2-2)
       // Uneven result = one team won the series
       if(awayW===homeW)return{label:'Series Split',type:'split',awayW,homeW};
       const winLabel = awayW>homeW?awayLabel:homeLabel;
-      return{label:`${winLabel} Win Series ${Math.max(awayW,homeW)}-${Math.min(awayW,homeW)}`,type:'win',awayW,homeW};
+      return{label:`${winLabel} Won the Series ${Math.max(awayW,homeW)}-${Math.min(awayW,homeW)}`,type:'win',awayW,homeW};
     }
     return{label:`${awayLabel} ${awayW} – ${homeW} ${homeLabel}`,type:'live',awayW,homeW};
   }
@@ -2199,13 +2206,11 @@ function renderSeriesCard(series, today){
     <div class="teams-row">
       <div class="team-side away">
         ${renderTeamLogo(series.away)}
-        <div class="team-name">${escHtml(series.away.abbr||teamAbbr(series.away.name))}</div>
         <div class="team-record">${escHtml(awayRec)}</div>
       </div>
       <div class="at-divider">at</div>
       <div class="team-side home">
         ${renderTeamLogo(series.home)}
-        <div class="team-name">${escHtml(series.home.abbr||teamAbbr(series.home.name))}</div>
         <div class="team-record">${escHtml(homeRec)}</div>
       </div>
     </div>
@@ -3149,8 +3154,8 @@ init();
   });
   const o21 = s3.outcome();
   assert('2-1 series is win not split', o21.type === 'win');
-  assert('2-1 winner label is WSH',     o21.label.includes('WSH'));
-  assert('2-1 label includes Win Series 2-1', o21.label.includes('2-1'));
+  assert('2-1 winner label is WSH',      o21.label.includes('WSH'));
+  assert('2-1 label includes Won the Series', o21.label.includes('Won the Series'));
 
   // A 2-2 split in a 4-game series IS a split
   const split22 = mkSeries4([true,false,true,false]);
