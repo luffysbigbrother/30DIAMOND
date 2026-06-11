@@ -1009,7 +1009,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.41';
+const APP_VERSION  = '2026.05.28.42';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -2616,19 +2616,15 @@ function exportSeasonCSV() {
   const weeks   = Object.keys(history).sort();
   if(!weeks.length){ alert('No season data to export yet.'); return; }
 
-  // Weekly summary CSV
-  let csv = 'Week Start,Score,Correct,Games,Accuracy
-';
+  // Weekly summary CSV — template literals with \n escape (not literal newlines)
+  let csv = `Week Start,Score,Correct,Games,Accuracy\n`;
   weeks.forEach(wk => {
     const w   = history[wk];
     const pct = w.games > 0 ? Math.round((w.correct / w.games) * 100) : '';
-    csv += `${wk},${w.score},${w.correct},${w.games},${pct ? pct + '%' : ''}
-`;
+    csv += `${wk},${w.score},${w.correct},${w.games},${pct ? pct + '%' : ''}\n`;
   });
 
-  csv += '
-Team,Picked,Correct,Wrong,Accuracy
-';
+  csv += `\nTeam,Picked,Correct,Wrong,Accuracy\n`;
   const teamMap = {};
   weeks.forEach(wk => {
     Object.entries(history[wk].teamStats || {}).forEach(([abbr, s]) => {
@@ -2646,8 +2642,7 @@ Team,Picked,Correct,Wrong,Accuracy
     .forEach(([abbr, s]) => {
       const wrong = s.picked - s.correct;
       const pct   = s.picked > 0 ? Math.round((s.correct/s.picked)*100) + '%' : '';
-      csv += `${abbr},${s.picked},${s.correct},${wrong},${pct}
-`;
+      csv += `${abbr},${s.picked},${s.correct},${wrong},${pct}\n`;
     });
 
   // Download
