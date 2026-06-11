@@ -13,7 +13,7 @@
 <!-- PWA — standalone launch from iPad/iPhone home screen -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="30 Diamond">
+<meta name="apple-mobile-web-app-title" content="Diamond">
 
 <!-- Theme color — matches app background for status bar on Android/Safari -->
 <meta name="theme-color" content="#0a0c0f">
@@ -21,7 +21,7 @@
 <!-- Prevent iOS from detecting phone numbers and auto-linking them -->
 <meta name="format-detection" content="telephone=no">
 
-<title>30 Diamond</title>
+<title>Diamond</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;500;600;700;800;900&family=Barlow:wght@300;400;500;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 /* ─────────────────────────────────────────
@@ -817,6 +817,58 @@ footer.disclaimer{
 .week-nav-btn:disabled{opacity:0.2;cursor:not-allowed;}
 
 /* ─────────────────────────────────────────
+   STREAM MODE — body.stream-mode enlarges all text for 1080p
+───────────────────────────────────────── */
+body.stream-mode header { padding: 0 32px; }
+body.stream-mode .header-inner { height: 72px; }
+body.stream-mode .logo-mark { width: 56px; height: 56px; }
+body.stream-mode .logo-mark::before { inset: 6px; }
+body.stream-mode .logo-mark::after  { inset: 10px; }
+body.stream-mode .logo-mark-num     { font-size: 17px; }
+body.stream-mode .logo-text-main    { font-size: 24px; }
+body.stream-mode .logo-text-top     { font-size: 10px; }
+body.stream-mode .week-range        { font-size: 13px; }
+body.stream-mode .pill-value        { font-size: 18px; }
+body.stream-mode .pill-label        { font-size: 12px; }
+body.stream-mode .view-btn          { font-size: 12px; padding: 6px 16px; }
+body.stream-mode .stat-block        { padding: 16px 20px; }
+body.stream-mode .stat-block .s-label { font-size: 12px; }
+body.stream-mode .stat-block .s-value { font-size: 32px; }
+body.stream-mode .stat-block .s-sub   { font-size: 12px; }
+body.stream-mode .series-grid { grid-template-columns: repeat(auto-fill, minmax(440px,1fr)); gap: 18px; }
+body.stream-mode .team-abbr-large   { font-size: 52px; }
+body.stream-mode                    { --slot-height: 128px; }
+body.stream-mode .h-abbr                      { font-size: 28px; }
+body.stream-mode .slot-half.is-picked .h-abbr { font-size: 30px; }
+body.stream-mode .slot-winner-card .w-abbr    { font-size: 34px; }
+body.stream-mode .slot-locked-card .lp-abbr   { font-size: 34px; }
+body.stream-mode .w-score       { font-size: 12px; }
+body.stream-mode .w-pick-note   { font-size: 10px; }
+body.stream-mode .slot-pts      { font-size: 11px; }
+body.stream-mode .row-day-label { font-size: 13px; }
+body.stream-mode .row-status-tag{ font-size: 10px; padding: 3px 8px; }
+body.stream-mode .lock-btn      { font-size: 12px; padding: 13px; }
+body.stream-mode .outcome-label { font-size: 11px; }
+body.stream-mode .outcome-value { font-size: 14px; }
+body.stream-mode .season-table th           { font-size: 12px; padding: 10px 18px; }
+body.stream-mode .season-table td           { font-size: 16px; padding: 13px 18px; }
+body.stream-mode .season-table td.col-score { font-size: 20px; }
+body.stream-mode .season-table td.col-team  { font-size: 20px; }
+
+/* Pulsing live indicator — visible only in stream mode */
+.stream-indicator{
+  display:none;align-items:center;gap:5px;
+  font-family:'Share Tech Mono',monospace;font-size:9px;
+  letter-spacing:0.14em;text-transform:uppercase;color:#ef4444;
+  animation:pulse-red 1.5s ease-in-out infinite;
+}
+@keyframes pulse-red{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.stream-indicator::before{
+  content:'';width:6px;height:6px;border-radius:50%;
+  background:#ef4444;display:inline-block;
+}
+
+/* ─────────────────────────────────────────
    RESPONSIVE
 ───────────────────────────────────────── */
 @media(max-width:680px){
@@ -856,6 +908,8 @@ footer.disclaimer{
         <span class="pill-label" id="scoreLabel">Score</span>
         <span class="pill-value" id="headerScore">—</span>
       </div>
+      <span class="stream-indicator" id="streamIndicator">Live</span>
+      <button class="view-btn" id="btnStream" onclick="toggleStreamMode()" title="Stream mode">⊞</button>
     </div>
   </div>
 </header>
@@ -955,7 +1009,7 @@ footer.disclaimer{
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.39';
+const APP_VERSION  = '2026.05.28.41';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -2399,6 +2453,26 @@ function attachAllHandlers(){
 }
 
 /* ═══════════════════════════════════════════
+   STREAM MODE
+═══════════════════════════════════════════ */
+let streamModeActive = false;
+
+function toggleStreamMode() {
+  streamModeActive = !streamModeActive;
+  document.body.classList.toggle('stream-mode', streamModeActive);
+  const btn       = document.getElementById('btnStream');
+  const indicator = document.getElementById('streamIndicator');
+  if(btn)       btn.classList.toggle('is-active', streamModeActive);
+  if(indicator) indicator.style.display = streamModeActive ? 'flex' : 'none';
+  // Persist across sessions
+  try { localStorage.setItem('30d_streamMode', streamModeActive ? '1' : '0'); } catch{}
+}
+
+function initStreamMode() {
+  try { if(localStorage.getItem('30d_streamMode') === '1') toggleStreamMode(); } catch{}
+}
+
+/* ═══════════════════════════════════════════
    SEASON VIEW
 ═══════════════════════════════════════════ */
 
@@ -2723,6 +2797,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 setInterval(checkRollover, 5*60*1000);
 
+initStreamMode();
 init();
 
 /* ═══════════════════════════════════════════
@@ -3105,6 +3180,5 @@ init();
   pass.forEach(p => console.log(' ✓', p));
 })();
 </script>
-<footer class="disclaimer">Independent fan prediction app — not affiliated with or endorsed by MLB or any team.</footer>
 </body>
 </html>
