@@ -310,16 +310,28 @@ main{
 .tag-played{color:var(--text-muted);border:1px solid var(--border2);opacity:0.6;}
 .tag-future{color:var(--text-muted);border:1px solid var(--border);opacity:0.4;}
 
-/* Past locked rows — dimmed history, not the current focus */
-.pick-row.is-past-locked {
-  opacity: 0.45;
+/* Past locked rows — dim non-result elements only.
+   Row header, lock bar, and open slots dim to signal history.
+   Winner cards (final games) stay full opacity — result is permanent. */
+.pick-row.is-past-locked .row-header,
+.pick-row.is-past-locked .row-lock-wrap,
+.pick-row.is-past-locked .slot-box:not(.winner-correct):not(.winner-wrong):not(.winner-nopick) {
+  opacity: 0.35;
   transition: opacity 0.2s;
 }
-.pick-row.is-past-locked:hover {
-  opacity: 0.65;
+.pick-row.is-past-locked:hover .row-header,
+.pick-row.is-past-locked:hover .row-lock-wrap {
+  opacity: 0.55;
 }
 
-/* Current day row — full weight, gold accent on label already handles emphasis */
+/* Winner cards always full opacity — decided results */
+.pick-row.is-past-locked .slot-box.winner-correct,
+.pick-row.is-past-locked .slot-box.winner-wrong,
+.pick-row.is-past-locked .slot-box.winner-nopick {
+  opacity: 1;
+}
+
+/* Current day row — full weight */
 .pick-row.is-current { opacity: 1; }
 
 /* Row score */
@@ -1016,7 +1028,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.46';
+const APP_VERSION  = '2026.05.28.52';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1847,8 +1859,20 @@ function renderTimeBar(game){
  *   rowOpen     — row date has arrived and row is not locked
  */
 function renderGameSlot({ game, series, dayRow, today, isPrefilled, isMissed, isBeyondRow, isPickable, rowLocked, rowOpen, gamePts = null }){
-  const sk       = series.key;
-  const pick     = AppState.getPick(sk, game.idx, dayRow);
+  const sk = series.key;
+
+  // For pre-filled games (final before this row), find the pick from the
+  // day it was first made — not the current dayRow which may have no pick.
+  // This ensures Day 2/3 rows show correct/wrong winner card styling for
+  // games already played. Falls back to current dayRow pick if no earlier pick.
+  let pick = AppState.getPick(sk, game.idx, dayRow);
+  if(!pick && isPrefilled){
+    for(let d = 1; d < dayRow; d++){
+      const p = AppState.getPick(sk, game.idx, d);
+      if(p){ pick = p; break; }
+    }
+  }
+
   const awayAbbr = series.away.abbr || teamAbbr(series.away.name);
   const homeAbbr = series.home.abbr || teamAbbr(series.home.name);
   const awayColor = teamColor(series.away.abbr || teamAbbr(series.away.name));
@@ -2063,18 +2087,15 @@ function renderPickRows(series, today, dates, gameScores = {}){
       tagClass += ' tag-open'; tagText = 'Open';
     }
 
-    // Row score — sum points for games that are final on this row
+    // Row score — sum pre-computed gameScores for final games on this row.
+    // gameScores already computed by computeSeriesScore in renderSeriesCard —
+    // no need to re-call scoreGame here.
     let rowScoreHtml = '';
     if(!isFuture){
       let rowPts = 0;
       series.games.forEach(g => {
         if(!g.isFinal()) return;
-        const dp = {};
-        for(let d = 1; d <= dayRow; d++){
-          const p = AppState.getPick(sk, g.idx, d);
-          if(p) dp[d] = p;
-        }
-        rowPts += scoreGame(g, dp, g.idx).pts;
+        rowPts += gameScores[g.idx] ?? 0;
       });
       if(rowPts !== 0) rowScoreHtml = `<span class="row-score">${rowPts > 0 ? '+' : ''}${rowPts}pts</span>`;
     }
@@ -2175,13 +2196,14 @@ function renderCardFooter(outcome, total){
   return`<div class="card-footer">${outcomeHtml}${scorePart}</div>`;
 }
 
-function renderSeriesCard(series, today){
+function renderSeriesCard(series, today, score = null){
   const sk      = series.key;
   const awayRec = ApiCache.records[series.away.id]||'—';
   const homeRec = ApiCache.records[series.home.id]||'—';
 
-  // Compute once — passed to all sub-renderers that need it
-  const score      = computeSeriesScore(series, AppState);
+  // Accept pre-computed score from renderGrid to avoid double scoring.
+  // Falls back to computing if called standalone (e.g. rerenderCard).
+  if(!score) score = computeSeriesScore(series, AppState);
   const { gameScores } = score;
   const outcome   = series.outcome();
   const dates     = series.seriesDates();  // memoize for this render pass
@@ -2233,35 +2255,67 @@ function renderSeriesCard(series, today){
  * Pure function — no DOM, fully testable.
  * Returns { correct, wrong, pending, totalScore, pct }
  */
-function computeWeekStats(series){
-  let correct=0, wrong=0, pending=0, totalScore=0;
+/**
+ * Compute weekly stats — only counts games within the display week range.
+ * Separates wrong picks from missed picks for accurate accuracy calculation.
+ * Each game is counted exactly ONCE regardless of how many day rows it appears in.
+ *
+ * @param {Series[]} series            — series for the week
+ * @param {string}   dsStr             — display week start 'YYYY-MM-DD'
+ * @param {string}   deStr             — display week end 'YYYY-MM-DD'
+ * @param {object}   precomputedScores — { seriesKey: total } from scoreCache (normal path).
+ *                                       Pass null only when scoreCache is unavailable
+ *                                       (degraded path — will re-call computeSeriesScore).
+ */
+function computeWeekStats(series, dsStr, deStr, precomputedScores = null){
+  // precomputedScores: normal path — avoids re-scoring all series on every call.
+  // null fallback: degraded path — used only when scoreCache unavailable.
+  let correct=0, wrong=0, missed=0, pending=0, totalScore=0;
 
   series.forEach(s=>{
-    const {total} = computeSeriesScore(s, AppState);
+    // Use pre-computed score if available — avoids double scoring per render
+    const total = (precomputedScores && precomputedScores[s.key] !== undefined)
+      ? precomputedScores[s.key]
+      : computeSeriesScore(s, AppState).total;
     totalScore += total;
-    const dates = s.seriesDates();
+    const numDates = s.seriesDates().length;
+
     s.games.forEach(g=>{
+      // Only count games that fall within the display week
+      if(g.date < dsStr || g.date > deStr) return;
+
       if(g.isFinal()){
-        let hadCorrect=false, hadPick=false;
-        dates.forEach((_,i)=>{
-          const p=AppState.getPick(s.key,g.idx,i+1);
-          if(p){ hadPick=true; if(g.evaluate(p)==='correct') hadCorrect=true; }
-        });
-        if(hadCorrect) correct++;
-        else wrong++;  // counts both wrong-pick and no-pick as wrong
+        // Count each game ONCE — find the best pick across all day rows.
+        // Iterating over dates and counting per-row caused prefilled games
+        // (which appear on multiple rows) to be counted multiple times.
+        let hadCorrect = false, hadPick = false;
+        for(let d = 1; d <= numDates; d++){
+          const p = AppState.getPick(s.key, g.idx, d);
+          if(p){
+            hadPick = true;
+            if(g.evaluate(p) === 'correct'){ hadCorrect = true; break; }
+          }
+        }
+        if(hadCorrect)   correct++;
+        else if(hadPick) wrong++;   // picked wrong on every day tried
+        else             missed++;  // no pick made — don't penalise accuracy
       } else if(!g.isPostponed()){
         pending++;
       }
     });
   });
 
-  const total=correct+wrong;
-  const pct=total>0?Math.round((correct/total)*100):null;
-  return{ correct, wrong, pending, totalScore, pct };
+  // Accuracy = correct / (correct + wrong) — excludes missed picks
+  const picked = correct + wrong;
+  const pct    = picked > 0 ? Math.round((correct / picked) * 100) : null;
+  return{ correct, wrong, missed, pending, totalScore, pct };
 }
 
-function updateStatsUI(){
-  const { correct, wrong, pending, totalScore, pct } = computeWeekStats(ApiCache.series);
+function updateStatsUI(scoreCache = null){
+  const _range  = getViewingRange();
+  const _dsStr  = toDateStr(_range.start);
+  const _deStr  = toDateStr(_range.end);
+  const { correct, wrong, missed, pending, totalScore, pct } = computeWeekStats(ApiCache.series, _dsStr, _deStr, scoreCache);
   const pctStr = pct!=null?`${pct}%`:'—';
 
   document.getElementById('statScore').textContent   = totalScore;
@@ -2271,41 +2325,7 @@ function updateStatsUI(){
   document.getElementById('accFill').style.width     = pct!=null?`${pct}%`:'0%';
   document.getElementById('headerScore').textContent = totalScore || '—';
 
-  // Persist week score once any series has finished games
-  const range   = getViewingRange();
-  const weekKey = toDateStr(range.start);
-  const hasResults = ApiCache.series.length > 0 &&
-    ApiCache.series.some(s => s.games.some(g => g.isFinal()));
-  if(hasResults && totalScore !== 0){
-    // Build team stats: for each final game track which team was picked and if correct
-    const teamStats = {};
-    ApiCache.series.forEach(s => {
-      const dates = s.seriesDates();
-      s.games.forEach(g => {
-        if(!g.isFinal()) return;
-        const winner = g.winnerSide();
-        if(!winner) return;
-        // Determine which team was picked (use any day's pick)
-        let pickedAbbr = null;
-        let wasCorrect = false;
-        for(let d = 1; d <= dates.length; d++){
-          const p = AppState.getPick(s.key, g.idx, d);
-          if(p){
-            pickedAbbr = p === PICK.AWAY
-              ? (s.away.abbr || teamAbbr(s.away.name))
-              : (s.home.abbr || teamAbbr(s.home.name));
-            wasCorrect = p === winner;
-            break;
-          }
-        }
-        if(!pickedAbbr) return;
-        if(!teamStats[pickedAbbr]) teamStats[pickedAbbr] = { picked:0, correct:0 };
-        teamStats[pickedAbbr].picked++;
-        if(wasCorrect) teamStats[pickedAbbr].correct++;
-      });
-    });
-    AppState.saveWeekScore(weekKey, totalScore, correct, correct + pending, teamStats);
-  }
+  // Week score persistence handled in renderGrid() after full render — not here
 
   // Season bar — show once any week history exists
   const seasonBar = document.getElementById('seasonBar');
@@ -2351,28 +2371,70 @@ function applyAutoLocks(series) {
   });
 }
 
-function seriesSortKey(s, today){
-  // Returns sort priority: 0=completed, 1=active today, 2=upcoming
-  const todayStr = toDateStr(today);
-  const allFinal = s.games.every(g => g.isFinal());
-  if(allFinal) return 0;
-  const hasGameToday = s.games.some(g => g.date === todayStr);
-  if(hasGameToday) return 1;
-  return 2;
+/**
+ * Persist the current week's score, correct count, and team stats to AppState.
+ * Called from renderGrid after all series are scored and rendered.
+ * Extracted from renderGrid — state persistence belongs in its own function.
+ *
+ * @param {object} scoreCache — { seriesKey: total } pre-computed from renderGrid
+ */
+function persistWeekScore(scoreCache = null) {
+  const range  = getViewingRange();
+  const weekKey = toDateStr(range.start);
+  const dsStr  = toDateStr(range.start);
+  const deStr  = toDateStr(range.end);
+
+  const hasResults = ApiCache.series.length > 0 &&
+    ApiCache.series.some(s => s.games.some(g => g.isFinal()));
+  if(!hasResults) return;
+
+  const { correct, pending, totalScore } =
+    computeWeekStats(ApiCache.series, dsStr, deStr, scoreCache);
+  if(totalScore === 0) return;
+
+  // Build team stats — which teams were picked for final games this week
+  const teamStats = {};
+  ApiCache.series.forEach(s => {
+    const numDates = s.seriesDates().length;
+    s.games.forEach(g => {
+      if(!g.isFinal() || g.date < dsStr || g.date > deStr) return;
+      const winner = g.winnerSide();
+      if(!winner) return;
+      let pickedAbbr = null, wasCorrect = false;
+      for(let d = 1; d <= numDates; d++){
+        const p = AppState.getPick(s.key, g.idx, d);
+        if(p){
+          pickedAbbr = p === PICK.AWAY
+            ? (s.away.abbr || teamAbbr(s.away.name))
+            : (s.home.abbr || teamAbbr(s.home.name));
+          wasCorrect = p === winner;
+          break;
+        }
+      }
+      if(!pickedAbbr) return;
+      if(!teamStats[pickedAbbr]) teamStats[pickedAbbr] = { picked:0, correct:0 };
+      teamStats[pickedAbbr].picked++;
+      if(wasCorrect) teamStats[pickedAbbr].correct++;
+    });
+  });
+
+  AppState.saveWeekScore(weekKey, totalScore, correct, correct + pending, teamStats);
 }
 
 function renderGrid(){
   const today  = todayMidnight();
   // Apply auto-locks before rendering — state mutation belongs here, not in render functions
   applyAutoLocks(ApiCache.series);
+
+  // Sort: active/upcoming series chronologically by start date (Monday first, Friday last).
+  // Completed series (all games final) go to the bottom — they're history.
+  // Within completed, most recent first so last week's results are at top of that group.
   const series = [...ApiCache.series].sort((a, b) => {
-    const ka = seriesSortKey(a, today);
-    const kb = seriesSortKey(b, today);
-    if(ka !== kb) return ka - kb;
-    // Within same group: completed → most recent first, others → earliest first
-    return ka === 0
-      ? b.startDate() - a.startDate()
-      : a.startDate() - b.startDate();
+    const aFinal = a.games.every(g => g.isFinal());
+    const bFinal = b.games.every(g => g.isFinal());
+    if(aFinal !== bFinal) return aFinal ? 1 : -1; // active before completed
+    if(aFinal && bFinal)  return b.startDate() - a.startDate(); // completed: newest first
+    return a.startDate() - b.startDate(); // active: chronological (Mon before Fri)
   });
   const grid   = document.getElementById('seriesGrid');
 
@@ -2385,8 +2447,17 @@ function renderGrid(){
   }
 
   document.getElementById('seriesCount').textContent=`${series.length} series`;
-  grid.innerHTML=series.map(s=>renderSeriesCard(s,today)).join('');
-  updateStatsUI();
+  // Build score cache during render — computeSeriesScore is called once per series
+  // in renderSeriesCard; we capture those results here to avoid re-scoring in stats.
+  const scoreCache = {};
+  grid.innerHTML=series.map(s=>{
+    const score = computeSeriesScore(s, AppState);
+    scoreCache[s.key] = score.total;
+    return renderSeriesCard(s, today, score);
+  }).join('');
+  updateStatsUI(scoreCache);
+
+  persistWeekScore(scoreCache);
 }
 
 function rerenderCard(sk){
@@ -2397,11 +2468,19 @@ function rerenderCard(sk){
   applyAutoLocks([series]);
   const existing=document.querySelector(`.series-card[data-sk="${sk}"]`);
   if(!existing)return;
+  const score = computeSeriesScore(series, today);
   const tmp=document.createElement('div');
-  tmp.innerHTML=renderSeriesCard(series,today);
+  tmp.innerHTML=renderSeriesCard(series, today, score);
   const newCard=tmp.firstElementChild;
   existing.replaceWith(newCard);
-  updateStatsUI();
+  // Build minimal scoreCache so updateStatsUI doesn't re-score all series
+  const reRenderCache = {};
+  ApiCache.series.forEach(s => {
+    reRenderCache[s.key] = s.key === sk
+      ? score.total
+      : (computeSeriesScore(s, AppState).total);
+  });
+  updateStatsUI(reRenderCache);
   attachHandlers(newCard);
 }
 
@@ -3064,8 +3143,7 @@ init();
   assert('Past row: Game1 missed',     day2MissedStates.get(missedG).isMissed   === true);
   assert('Past row: Game1 not pickable', day2MissedStates.get(missedG).isPickable === false);
 
-  // ── 25. seriesSortKey
-  const today25 = new Date('2026-05-28T00:00:00');
+  // ── 25. Series sort order — active before completed, chronological within group
   function mkSeriesForSort(dates, allFinal) {
     const games = dates.map((d,i) => new Game({
       gameId:i, date:d, dateObj:new Date(d+'T12:00:00'), time:null,
@@ -3075,12 +3153,21 @@ init();
     }, i));
     return new Series({ key:'sk', away:{id:1,name:'A',abbr:'A',logo:''}, home:{id:2,name:'B',abbr:'B',logo:''}, venue:'', games, totalGames:games.length });
   }
-  const completedS = mkSeriesForSort(['2026-05-25','2026-05-26','2026-05-27'], true);
-  const activeS    = mkSeriesForSort(['2026-05-28','2026-05-29','2026-05-30'], false);
-  const upcomingS  = mkSeriesForSort(['2026-05-29','2026-05-30','2026-05-31'], false);
-  assert('seriesSortKey completed = 0', seriesSortKey(completedS, today25) === 0);
-  assert('seriesSortKey active = 1',    seriesSortKey(activeS, today25)    === 1);
-  assert('seriesSortKey upcoming = 2',  seriesSortKey(upcomingS, today25)  === 2);
+  const mondaySeries  = mkSeriesForSort(['2026-05-25','2026-05-26','2026-05-27'], false);
+  const fridaySeries  = mkSeriesForSort(['2026-05-29','2026-05-30','2026-05-31'], false);
+  const completedS    = mkSeriesForSort(['2026-05-25','2026-05-26','2026-05-27'], true);
+
+  // Active series sort chronologically — Monday before Friday
+  const sorted = [fridaySeries, mondaySeries, completedS].sort((a,b) => {
+    const aF = a.games.every(g=>g.isFinal());
+    const bF = b.games.every(g=>g.isFinal());
+    if(aF !== bF) return aF ? 1 : -1;
+    if(aF && bF)  return b.startDate() - a.startDate();
+    return a.startDate() - b.startDate();
+  });
+  assert('Sort: Monday active before Friday active', sorted[0] === mondaySeries);
+  assert('Sort: Friday active before completed',     sorted[1] === fridaySeries);
+  assert('Sort: completed series at bottom',         sorted[2] === completedS);
 
   // ── 26. safeScore — NaN guard
   const safeScore = (s) => { const n = parseFloat(s); return isNaN(n) ? 0 : n; };
