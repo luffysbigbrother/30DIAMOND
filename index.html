@@ -1028,7 +1028,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.52';
+const APP_VERSION  = '2026.05.28.53';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -2426,15 +2426,18 @@ function renderGrid(){
   // Apply auto-locks before rendering — state mutation belongs here, not in render functions
   applyAutoLocks(ApiCache.series);
 
-  // Sort: active/upcoming series chronologically by start date (Monday first, Friday last).
-  // Completed series (all games final) go to the bottom — they're history.
-  // Within completed, most recent first so last week's results are at top of that group.
+  // Sort: always chronological by start date (Monday first, Friday last).
+  // Active series before completed series within same start date.
+  // This preserves week order regardless of completion status —
+  // a completed Friday series never jumps above an active Monday series.
   const series = [...ApiCache.series].sort((a, b) => {
+    const aStart = a.startDate() - 0;
+    const bStart = b.startDate() - 0;
+    if(aStart !== bStart) return aStart - bStart; // chronological always
+    // Same start date: active before completed (in-progress series first)
     const aFinal = a.games.every(g => g.isFinal());
     const bFinal = b.games.every(g => g.isFinal());
-    if(aFinal !== bFinal) return aFinal ? 1 : -1; // active before completed
-    if(aFinal && bFinal)  return b.startDate() - a.startDate(); // completed: newest first
-    return a.startDate() - b.startDate(); // active: chronological (Mon before Fri)
+    return aFinal === bFinal ? 0 : aFinal ? 1 : -1;
   });
   const grid   = document.getElementById('seriesGrid');
 
