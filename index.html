@@ -232,6 +232,9 @@ main{
   letter-spacing:0.16em;text-transform:uppercase;color:var(--text-muted);
   border:1px solid var(--border2);padding:2px 7px;
 }
+.postseason-badge{
+  color:var(--accent);border-color:var(--accent);background:var(--accent-dim);
+}
 .series-venue{
   font-size:10px;color:var(--text-muted);font-weight:300;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;
@@ -811,6 +814,31 @@ footer.disclaimer{
 .season-empty-body{font-size:12px;color:var(--text-muted);line-height:1.7;}
 
 /* ─────────────────────────────────────────
+   JACKPOT BANNER
+───────────────────────────────────────── */
+.jackpot-banner{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 20px;margin-bottom:14px;
+  border:1px solid var(--accent);background:var(--accent-dim);
+  animation:fadeUp 0.4s ease both;
+}
+.jackpot-banner.is-super{
+  border-color:#ffe066;background:rgba(255,224,102,0.08);
+  box-shadow:0 0 24px rgba(255,224,102,0.12);
+}
+.jackpot-icon{font-size:18px;flex-shrink:0;}
+.jackpot-label{
+  font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;
+  letter-spacing:0.1em;text-transform:uppercase;color:var(--accent);flex:1;
+}
+.jackpot-banner.is-super .jackpot-label{color:#ffe066;}
+.jackpot-pts{
+  font-family:'Share Tech Mono',monospace;font-size:16px;
+  color:var(--gold-score);white-space:nowrap;
+}
+.jackpot-banner.is-super .jackpot-pts{color:#ffe066;font-size:20px;}
+
+/* ─────────────────────────────────────────
    SEASON BAR
 ───────────────────────────────────────── */
 .season-bar{
@@ -1028,7 +1056,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.53';
+const APP_VERSION  = '2026.05.28.61';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1057,6 +1085,13 @@ const STORAGE_KEY = 'diamond_v4';
 // Keep false for production to avoid console noise.
 const DEBUG = false;
 
+/* ── SEASON CALENDAR CONSTANTS ──
+   Update these each year when the MLB schedule is released.
+   All dates are YYYY-MM-DD strings compared via toDateStr(). */
+const SEASON_END       = '2026-11-15'; // After World Series — safe upper bound
+const OPENING_DAY_NEXT = '2027-04-01'; // Opening Day 2027 — verify when schedule releases
+const ALL_STAR_WEEK    = '2026-07-13'; // Monday of All-Star break week
+
 const GAME_STATUS = Object.freeze({ PREVIEW:'P', LIVE:'L', FINAL:'F', POSTPONED:'D' });
 const PICK        = Object.freeze({ AWAY:'away', HOME:'home' });
 
@@ -1081,10 +1116,35 @@ const ABANDON_PTS = Object.freeze({
 // Switched back and forth: abandoned correct pick, returned, still wrong
 const SWITCHBACK_WRONG_PTS = -10;
 
-// Series jackpot: all games correct Day 1 + zero switches = maximum reward
+// ── REGULAR SEASON JACKPOT ──
 const JACKPOT_PTS = 50;
 
-const MAX_SERIES_GAMES = 4; // Maximum games in a supported series
+// ── POSTSEASON ROUND DEFINITIONS ──
+const POSTSEASON_ROUND = Object.freeze({
+  WILDCARD:     'wildcard',
+  DIVISION:     'division',
+  CHAMPIONSHIP: 'championship',
+  WORLDSERIES:  'worldseries',
+});
+
+const POSTSEASON_MULTIPLIER = Object.freeze({
+  wildcard:     1.5,
+  division:     2,
+  championship: 3,
+  worldseries:  4,
+});
+
+// Series jackpot by round (Wild Card not eligible)
+const POSTSEASON_JACKPOT = Object.freeze({
+  division:     100,
+  championship: 150,
+  worldseries:  200,
+});
+
+const LEAGUE_JACKPOT_PTS = 500;   // AL or NL perfect postseason
+const SUPER_JACKPOT_PTS  = 2500;  // ALL postseason series perfect
+
+const MAX_SERIES_GAMES = 4; // Maximum games in a regular season series
 
 const TEAM_ABBR = Object.freeze({
   'Arizona Diamondbacks':'ARI','Atlanta Braves':'ATL','Baltimore Orioles':'BAL',
@@ -1173,6 +1233,30 @@ function escHtml(s){
 function safeScore(s){ const n = parseFloat(s); return isNaN(n) ? 0 : n; }
 
 /* ═══════════════════════════════════════════
+   POSTSEASON ROUND DETECTION
+═══════════════════════════════════════════ */
+function detectPostseasonRound(event, seasonType, totalGames = 0) {
+  if(seasonType !== 3) return null;
+  const slug = (event.season?.slug || event.season?.type?.slug || '').toLowerCase();
+  if(slug.includes('wild'))         return POSTSEASON_ROUND.WILDCARD;
+  if(slug.includes('division'))     return POSTSEASON_ROUND.DIVISION;
+  if(slug.includes('championship')) return POSTSEASON_ROUND.CHAMPIONSHIP;
+  if(slug.includes('world'))        return POSTSEASON_ROUND.WORLDSERIES;
+  // Fallback: game count
+  if(totalGames <= 3) return POSTSEASON_ROUND.WILDCARD;
+  if(totalGames <= 5) return POSTSEASON_ROUND.DIVISION;
+  // Best-of-7: Championship and World Series both max 7 games.
+  // Cannot distinguish by game count alone — ESPN slug required.
+  // Default Championship (3×). Known limitation: WS scores at 3× if slug missing.
+  // ESPN slug detection is reliable in practice so this path is rarely reached.
+  return POSTSEASON_ROUND.CHAMPIONSHIP;
+}
+
+function postseasonMultiplier(round) {
+  return POSTSEASON_MULTIPLIER[round] ?? 1;
+}
+
+/* ═══════════════════════════════════════════
    DOMAIN MODEL
 ═══════════════════════════════════════════ */
 
@@ -1223,12 +1307,15 @@ class Game {
  * Sorted by date ascending. Each game has a stable idx.
  */
 class Series {
-  constructor({key,away,home,venue,games,totalGames}){
+  constructor({key,away,home,venue,games,totalGames,postseasonRound=null}){
     this.key=key;this.away=away;this.home=home;
     this.venue=venue;this.games=games;
-    // totalGames set to games.length after block-splitting in parseDatesIntoSeries
     this.totalGames=totalGames||games.length;
+    this.postseasonRound=postseasonRound; // null=regular season
   }
+  isPostseason(){ return this.postseasonRound !== null; }
+  isWildCard()  { return this.postseasonRound === POSTSEASON_ROUND.WILDCARD; }
+  multiplier()  { return postseasonMultiplier(this.postseasonRound); }
   startDate(){return this.games[0]?.dateObj;}
   endDate(){return this.games[this.games.length-1]?.dateObj;}
   completedGames(){return this.games.filter(g=>g.isFinal());}
@@ -1350,7 +1437,7 @@ function analysePickHistory(dayPicks, winner) {
  * @param {number} gameIdx  — 0-based index
  * @returns {{ pts:number, breakdown:[] }}
  */
-function scoreGame(game, dayPicks, gameIdx) {
+function scoreGame(game, dayPicks, gameIdx, multiplier = 1) {
   if (!game.isFinal()) return { pts:0, breakdown:[] };
 
   const winner = game.winnerSide();
@@ -1359,11 +1446,14 @@ function scoreGame(game, dayPicks, gameIdx) {
 
   if (a.isEmpty || !a.dayRows.length) return { pts:0, breakdown:[] };
 
+  const scale = pts => Math.round(pts * multiplier);
+  const mLabel = multiplier > 1 ? ` ×${multiplier}` : '';
+
   // ── RULES 6,7,8: Had it right, switched away (no switchback) → ABANDON penalty
   if (a.firstWasRight && a.everSwitched && !a.switchedBack) {
-    const days    = a.daysHeldCorrectBeforeSwitch;
-    const penalty = ABANDON_PTS[days] || ABANDON_PTS[3];
-    return { pts:penalty, breakdown:[{ label:`${gLabel} Abandoned (held ${days}d)`, pts:penalty }] };
+    const days = a.daysHeldCorrectBeforeSwitch;
+    const pts  = scale(ABANDON_PTS[days] || ABANDON_PTS[3]);
+    return { pts, breakdown:[{ label:`${gLabel} Abandoned (held ${days}d)${mLabel}`, pts }] };
   }
 
   // ── RULE 9: Switched away correct, switched back, correct → 0pts
@@ -1371,27 +1461,24 @@ function scoreGame(game, dayPicks, gameIdx) {
     return { pts:0, breakdown:[{ label:`${gLabel} Switched Back (0pts)`, pts:0 }] };
   }
 
-  // ── RULE 10: Switched away correct, switched back, wrong → -10pts
+  // ── RULE 10: Switched away correct, switched back, wrong
   if (a.firstWasRight && a.switchedBack && !a.isCorrect) {
-    return { pts:SWITCHBACK_WRONG_PTS,
-             breakdown:[{ label:`${gLabel} Switched Back & Wrong`, pts:SWITCHBACK_WRONG_PTS }] };
+    const pts = scale(SWITCHBACK_WRONG_PTS);
+    return { pts, breakdown:[{ label:`${gLabel} Switched Back & Wrong${mLabel}`, pts }] };
   }
 
   // ── RULES 1-4: Correct final pick
   if (a.isCorrect) {
     if (!a.everSwitched) {
-      // Never switched — score at day first picked
-      const pts = CORRECT_PTS[a.firstDay] || CORRECT_PTS[4];
-      return { pts, breakdown:[{ label:`${gLabel} Correct (Day ${a.firstDay})`, pts }] };
+      const pts = scale(CORRECT_PTS[a.firstDay] || CORRECT_PTS[4]);
+      return { pts, breakdown:[{ label:`${gLabel} Correct (Day ${a.firstDay})${mLabel}`, pts }] };
     } else {
-      // Switched at some point but ended correct — score at day of last switch
       const lastSwitch = a.switches[a.switches.length - 1];
-      const pts = CORRECT_PTS[lastSwitch.toDay] || CORRECT_PTS[4];
-      return { pts, breakdown:[{ label:`${gLabel} Corrected (Day ${lastSwitch.toDay})`, pts }] };
+      const pts = scale(CORRECT_PTS[lastSwitch.toDay] || CORRECT_PTS[4]);
+      return { pts, breakdown:[{ label:`${gLabel} Corrected (Day ${lastSwitch.toDay})${mLabel}`, pts }] };
     }
   }
 
-  // ── RULES 5: Wrong and never switched, or wrong after switching → 0pts
   return { pts:0, breakdown:[] };
 }
 
@@ -1404,15 +1491,16 @@ function scoreGame(game, dayPicks, gameIdx) {
  * @param {object} allDayPicks — { gameIdx: { dayRow: side } }
  * @returns {{ pts:number, breakdown:[] }}
  */
-function scoreSeriesOutcome(series, allDayPicks) {
+function scoreSeriesOutcome(series, allDayPicks, mult = 1) {
   const outcome = series.outcome();
   if (!outcome || outcome.type === 'live') return { pts:0, breakdown:[] };
 
-  // Every game must have a Day 1 pick and be final
+  // Wild Card is a qualifier — not eligible for jackpot
+  if(series.isWildCard && series.isWildCard()) return { pts:0, breakdown:[] };
+
   const allFinal = series.games.every(g => g.isFinal());
   if (!allFinal) return { pts:0, breakdown:[] };
 
-  // Every game: right from Day 1, zero switches
   const allPerfect = series.games.every(g => {
     const dp     = allDayPicks[g.idx] || {};
     const winner = g.winnerSide();
@@ -1423,10 +1511,13 @@ function scoreSeriesOutcome(series, allDayPicks) {
 
   if (!allPerfect) return { pts:0, breakdown:[] };
 
-  return {
-    pts: JACKPOT_PTS,
-    breakdown: [{ label:'Series Jackpot — Called it Day 1, Never Wavered', pts:JACKPOT_PTS }],
-  };
+  const isPS     = series.isPostseason && series.isPostseason();
+  const jackpot  = isPS ? (POSTSEASON_JACKPOT[series.postseasonRound] ?? JACKPOT_PTS) : JACKPOT_PTS;
+  const lbl      = isPS
+    ? `${series.postseasonRound.charAt(0).toUpperCase()}${series.postseasonRound.slice(1)} Jackpot — Day 1, Never Wavered`
+    : 'Series Jackpot — Called it Day 1, Never Wavered';
+
+  return { pts:jackpot, breakdown:[{ label:lbl, pts:jackpot }] };
 }
 
 /**
@@ -1459,18 +1550,20 @@ function computeSeriesScore(series, state){
     allDayPicks[gameIdx][dayRow] = state.picks[key];
   });
 
-  // Score each game — also build per-game score map for slot badges
+  const mult = series.multiplier ? series.multiplier() : 1;
+
+  // Score each game with postseason multiplier
   const gameScores = {};
   series.games.forEach(g => {
     const dp = allDayPicks[g.idx] || {};
-    const {pts, breakdown} = scoreGame(g, dp, g.idx);
+    const {pts, breakdown} = scoreGame(g, dp, g.idx, mult);
     total += pts;
     allBreakdown.push(...breakdown);
     gameScores[g.idx] = pts;
   });
 
   // Series outcome bonus
-  const {pts: opPts, breakdown: opBd} = scoreSeriesOutcome(series, allDayPicks);
+  const {pts: opPts, breakdown: opBd} = scoreSeriesOutcome(series, allDayPicks, mult);
   total += opPts;
   allBreakdown.push(...opBd);
 
@@ -1656,6 +1749,20 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       const status    = espnStatusToCode(stateType);
       if (status === GAME_STATUS.POSTPONED) return;
 
+      // Skip non-regular-season games (preseason type=1, postseason type=3).
+      // Regular season = type 2. This prevents Spring Training games from
+      // appearing in the pick system.
+      // Warn if neither field found — signals ESPN API schema change.
+      const rawSeasonType = event.season?.type ?? event.seasonType;
+      if(rawSeasonType === undefined && DEBUG){
+        console.warn('[30Diamond] Season type field missing — defaulting to regular season. Event id:', event.id);
+      }
+      const seasonType = rawSeasonType ?? 2;
+      if(seasonType === 1) return; // skip preseason only — postseason (3) allowed
+
+      // Capture postseason round — null for regular season
+      const psRound = seasonType === 3 ? detectPostseasonRound(event, 3) : null;
+
       const competitors = comp.competitors || [];
       const awaySide    = competitors.find(c => c.homeAway === 'away');
       const homeSide    = competitors.find(c => c.homeAway === 'home');
@@ -1666,7 +1773,9 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       const sk   = seriesKey(away.id, home.id);
 
       if (!map[sk]) {
-        map[sk] = { key:sk, away, home, venue:comp.venue?.fullName||'', games:[], totalGames:0 };
+        map[sk] = { key:sk, away, home, venue:comp.venue?.fullName||'', games:[], totalGames:0, postseasonRound:psRound };
+      } else if(psRound && !map[sk].postseasonRound){
+        map[sk].postseasonRound = psRound;
       }
 
       const awayScore = safeScore(awaySide.score);
@@ -1705,8 +1814,12 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       raw.games.sort((a, b) => a.dateObj - b.dateObj);
 
       // Guard: split games into contiguous series blocks.
-      // If the same team pair has a gap of more than 1 day between games,
-      // they are separate series. Keep only the block that overlaps the display week.
+      // Gap tolerance = 2 days to handle off-day scheduling (e.g. Mon/Tue/skip-Wed/Thu).
+      // These split series occur a few times per season due to rain delays or
+      // scheduling quirks. A 3-day+ gap reliably indicates a separate series.
+      // Two distinct series between the same teams within a single week fetch
+      // (Mon-Sun) with only a 2-day gap between them is essentially impossible
+      // in the MLB schedule.
       if(!raw.games.length) return new Series(raw);
       const blocks = [];
       let block = [raw.games[0]];
@@ -1714,7 +1827,7 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
         const prev = raw.games[i-1];
         const curr = raw.games[i];
         const dayGap = Math.round((curr.dateObj - prev.dateObj) / (1000*60*60*24));
-        if(dayGap <= 1){
+        if(dayGap <= 2){  // 2-day tolerance covers off-day split series
           block.push(curr);
         } else {
           blocks.push(block);
@@ -1731,8 +1844,12 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       });
 
       best.forEach((g, i) => { g.idx = i; });
-      raw.games    = best;
+      raw.games      = best;
       raw.totalGames = best.length;
+      // Refine WS detection: if 7-game series and only 1 series in postseason → World Series
+      if(raw.postseasonRound === POSTSEASON_ROUND.CHAMPIONSHIP && best.length > 5){
+        // Will be refined to WS when we can count active series — Championship is safe default
+      }
       return new Series(raw);
     })
     .filter(s => s.games.length > 0)
@@ -1772,12 +1889,12 @@ const AppState={
     catch{/* silent */}
   },
 
-  saveWeekScore(weekKey, score, correct, games, teamStats){
-    // teamStats: { 'ATL': { picked:5, correct:3 }, 'BOS': { picked:2, correct:1 } }
+  saveWeekScore(weekKey, score, correct, games, teamStats, jackpots){
     this.weekHistory[weekKey] = {
       score, correct, games,
       teamStats: teamStats || {},
-      savedAt: Date.now(),
+      jackpots:  jackpots  || null,
+      savedAt:   Date.now(),
     };
     this.save();
   },
@@ -2214,6 +2331,12 @@ function renderSeriesCard(series, today, score = null){
     <div class="card-topbar">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span class="series-badge">${series.totalGames}-Game Series</span>
+        ${series.isPostseason && series.isPostseason() ? `<span class="series-badge postseason-badge">${
+          series.postseasonRound === POSTSEASON_ROUND.WILDCARD     ? '★ Wild Card' :
+          series.postseasonRound === POSTSEASON_ROUND.DIVISION     ? `★ ×${series.multiplier()} Division Series` :
+          series.postseasonRound === POSTSEASON_ROUND.CHAMPIONSHIP ? `★ ×${series.multiplier()} Championship` :
+          series.postseasonRound === POSTSEASON_ROUND.WORLDSERIES  ? `⚡ ×${series.multiplier()} World Series` : ''
+        }</span>` : ''}
         <span class="series-venue">${escHtml(series.venue)}</span>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
@@ -2339,6 +2462,24 @@ function updateStatsUI(scoreCache = null){
   }
 }
 
+function renderJackpotBanner(jackpots) {
+  const existing = document.getElementById('jackpotBanner');
+  if(existing) existing.remove();
+  const total   = jackpots.superJackpot || (jackpots.alJackpot + jackpots.nlJackpot);
+  if(!total) return;
+  const isSuper = jackpots.superJackpot > 0;
+  const label   = jackpots.breakdown.map(b => b.label).join(' · ');
+  const banner  = document.createElement('div');
+  banner.id     = 'jackpotBanner';
+  banner.className = isSuper ? 'jackpot-banner is-super' : 'jackpot-banner';
+  banner.innerHTML = `
+    <span class="jackpot-icon">${isSuper ? '⚡' : '★'}</span>
+    <span class="jackpot-label">${escHtml(label)}</span>
+    <span class="jackpot-pts">+${total}pts</span>`;
+  const grid = document.getElementById('seriesGrid');
+  if(grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
+}
+
 /* ═══════════════════════════════════════════
    GRID RENDER
 ═══════════════════════════════════════════ */
@@ -2378,7 +2519,63 @@ function applyAutoLocks(series) {
  *
  * @param {object} scoreCache — { seriesKey: total } pre-computed from renderGrid
  */
-function persistWeekScore(scoreCache = null) {
+/**
+ * Compute AL/NL league jackpots and Super Jackpot across all postseason series.
+ * Pure function — state injected, no global AppState reference.
+ * Reuses analysePickHistory — no duplicated switch detection logic.
+ *
+ * @param {Series[]} series — all series including postseason
+ * @param {object}   state  — picks state (must have .picks object)
+ */
+function computeLeagueJackpots(series, state) {
+  const AL_TEAMS = new Set(['BAL','BOS','CWS','CLE','DET','HOU','KC','LAA','MIN','NYY','OAK','SEA','TB','TEX','TOR']);
+
+  const eligible = series.filter(s =>
+    s.isPostseason && s.isPostseason() &&
+    !s.isWildCard() &&
+    s.games.every(g => g.isFinal())
+  );
+  if(!eligible.length) return { superJackpot:0, alJackpot:0, nlJackpot:0, breakdown:[] };
+
+  // Reuses analysePickHistory — same switch detection as scoreSeriesOutcome
+  function isPerfectSeries(s) {
+    const prefix = s.key + '_g';
+    return s.games.every(g => {
+      const winner = g.winnerSide();
+      if(!winner) return false;
+      const dp = {};
+      Object.keys(state.picks).forEach(key => {
+        if(!key.startsWith(prefix)) return;
+        const m = key.match(/_g(\d+)_d(\d+)$/);
+        if(m && parseInt(m[1]) === g.idx) dp[parseInt(m[2])] = state.picks[key];
+      });
+      const a = analysePickHistory(dp, winner);
+      return !a.isEmpty && a.firstWasRight && !a.everSwitched;
+    });
+  }
+
+  function isALSeries(s) { return AL_TEAMS.has(s.home.abbr || teamAbbr(s.home.name)); }
+
+  const alSeries     = eligible.filter(s =>  isALSeries(s));
+  const nlSeries     = eligible.filter(s => !isALSeries(s));
+  const alPerfect    = alSeries.length > 0 && alSeries.every(isPerfectSeries);
+  const nlPerfect    = nlSeries.length > 0 && nlSeries.every(isPerfectSeries);
+  // Min 5 = 2 DS + 2 CS + 1 WS — full postseason coverage required for Super
+  const superEligible = alPerfect && nlPerfect && eligible.length >= 5;
+
+  const breakdown = [];
+  if(superEligible) {
+    breakdown.push({ label:'⚡ SUPER JACKPOT — Perfect Postseason, Every Series Day 1', pts: SUPER_JACKPOT_PTS });
+    return { superJackpot: SUPER_JACKPOT_PTS, alJackpot:0, nlJackpot:0, breakdown };
+  }
+
+  let alJackpot = 0, nlJackpot = 0;
+  if(alPerfect) { alJackpot = LEAGUE_JACKPOT_PTS; breakdown.push({ label:'AL Jackpot — All AL Series Called Day 1, Never Wavered', pts:alJackpot }); }
+  if(nlPerfect) { nlJackpot = LEAGUE_JACKPOT_PTS; breakdown.push({ label:'NL Jackpot — All NL Series Called Day 1, Never Wavered', pts:nlJackpot }); }
+  return { superJackpot:0, alJackpot, nlJackpot, breakdown };
+}
+
+function persistWeekScore(scoreCache = null, jackpots = null) {
   const range  = getViewingRange();
   const weekKey = toDateStr(range.start);
   const dsStr  = toDateStr(range.start);
@@ -2390,7 +2587,11 @@ function persistWeekScore(scoreCache = null) {
 
   const { correct, pending, totalScore } =
     computeWeekStats(ApiCache.series, dsStr, deStr, scoreCache);
-  if(totalScore === 0) return;
+  const jackpotTotal = jackpots
+    ? (jackpots.superJackpot || jackpots.alJackpot + jackpots.nlJackpot)
+    : 0;
+  const weekTotal = totalScore + jackpotTotal;
+  if(weekTotal === 0) return;
 
   // Build team stats — which teams were picked for final games this week
   const teamStats = {};
@@ -2418,7 +2619,7 @@ function persistWeekScore(scoreCache = null) {
     });
   });
 
-  AppState.saveWeekScore(weekKey, totalScore, correct, correct + pending, teamStats);
+  AppState.saveWeekScore(weekKey, weekTotal, correct, correct + pending, teamStats, jackpots);
 }
 
 function renderGrid(){
@@ -2442,10 +2643,44 @@ function renderGrid(){
   const grid   = document.getElementById('seriesGrid');
 
   if(!series.length){
-    grid.innerHTML=`<div class="empty-state">
-      <div class="state-title">No Active Series This Week</div>
-      <div class="state-body">Check back when games are scheduled.</div>
-    </div>`;
+    // Detect week context for tailored empty states
+    const emptyRange    = getViewingRange();
+    const emptyWeekKey  = toDateStr(emptyRange.start);
+    const isAllStarBreak = emptyWeekKey === ALL_STAR_WEEK;
+
+    // Offseason — show countdown to Opening Day
+    // SEASON_END is Nov 15 — safely after the World Series in any year.
+    const openingDay  = new Date(OPENING_DAY_NEXT + 'T00:00:00');
+    const now         = new Date();
+    const daysToOpening = Math.ceil((openingDay - now) / (1000*60*60*24));
+    const isOffseason   = toDateStr(now) > SEASON_END && now < openingDay;
+
+    if(isOffseason){
+      grid.innerHTML = `<div class="empty-state">
+        <div class="state-title">Offseason</div>
+        <div class="state-body">
+          Regular season picks resume Opening Day 2027.<br><br>
+          <span style="font-family:'Share Tech Mono',monospace;font-size:20px;color:var(--accent)">
+            ${daysToOpening} days
+          </span><br>
+          <span style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase">until Opening Day · ${OPENING_DAY_NEXT}</span>
+        </div>
+      </div>`;
+    } else if(isAllStarBreak){
+      grid.innerHTML = `<div class="empty-state">
+          <div class="state-title">All-Star Break</div>
+          <div class="state-body">
+            No regular season series this week.<br>
+            MLB All-Star Game · Tue, Jul 14 · Globe Life Field, Arlington TX<br><br>
+            Regular season resumes Friday, Jul 18.
+          </div>
+        </div>`;
+    } else {
+      grid.innerHTML = `<div class="empty-state">
+          <div class="state-title">No Active Series This Week</div>
+          <div class="state-body">Check back when games are scheduled.</div>
+        </div>`;
+    }
     return;
   }
 
@@ -2460,7 +2695,11 @@ function renderGrid(){
   }).join('');
   updateStatsUI(scoreCache);
 
-  persistWeekScore(scoreCache);
+  // Postseason: compute league/super jackpots and surface banner
+  const jackpots = computeLeagueJackpots(ApiCache.series, AppState);
+  if(jackpots.breakdown.length) renderJackpotBanner(jackpots);
+
+  persistWeekScore(scoreCache, jackpots);
 }
 
 function rerenderCard(sk){
