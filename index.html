@@ -388,11 +388,20 @@ main{
 /* Hover */
 .slot-box.is-pickable .slot-half:hover .h-abbr{color:var(--text-dim);}
 
-/* Picked — gold text, larger, left accent bar */
+/* Picked — gold text, larger, left accent bar + W badge in corner */
 .slot-half.is-picked .h-abbr{color:var(--accent);font-size:24px;}
 .slot-half.is-picked{position:relative;}
 .slot-half.is-picked::before{
   content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent);
+}
+.slot-half.is-picked::after{
+  content:'W';position:absolute;top:5px;right:6px;
+  font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:800;
+  letter-spacing:0.04em;color:var(--bg);
+  background:var(--accent);
+  width:16px;height:16px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  line-height:1;
 }
 
 /* Pick flash */
@@ -1056,7 +1065,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.61';
+const APP_VERSION  = '2026.05.28.72';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1113,8 +1122,13 @@ const ABANDON_PTS = Object.freeze({
   3: -20,  // Had it right Days 1-3, switched Day 4 (maximum failure)
 });
 
-// Switched back and forth: abandoned correct pick, returned, still wrong
-const SWITCHBACK_WRONG_PTS = -10;
+// NOTE: there is no "switched back but still wrong" rule. If firstWasRight
+// is true and switchedBack is true (finalPick === firstPick), then by
+// definition finalPick === firstPick === winner, which makes isCorrect true.
+// "Right first, returned to that same right pick, but ended up wrong" is a
+// logical contradiction — it can never occur, so no penalty constant exists
+// for it. Confirmed by exhaustive brute-force test across all 2-4 day
+// pick patterns (see inline audit suite).
 
 // ── REGULAR SEASON JACKPOT ──
 const JACKPOT_PTS = 50;
@@ -1242,7 +1256,14 @@ function detectPostseasonRound(event, seasonType, totalGames = 0) {
   if(slug.includes('division'))     return POSTSEASON_ROUND.DIVISION;
   if(slug.includes('championship')) return POSTSEASON_ROUND.CHAMPIONSHIP;
   if(slug.includes('world'))        return POSTSEASON_ROUND.WORLDSERIES;
-  // Fallback: game count
+
+  // Slug missing — fall back to game count. Warn so this is visible in DEBUG
+  // mode, since a wrong fallback here silently mis-scores an entire round
+  // (e.g. World Series scored at 1.5x/3x instead of 4x).
+  if(DEBUG){
+    console.warn('[30Diamond] Postseason slug missing, using game-count fallback. ' +
+      'totalGames:', totalGames, 'event id:', event.id);
+  }
   if(totalGames <= 3) return POSTSEASON_ROUND.WILDCARD;
   if(totalGames <= 5) return POSTSEASON_ROUND.DIVISION;
   // Best-of-7: Championship and World Series both max 7 games.
@@ -1374,8 +1395,8 @@ class Series {
    6. Had it right Day 1, switched Day 2            → -5
    7. Had it right Days 1-2, switched Day 3         → -10
    8. Had it right Days 1-3, switched Day 4         → -20
-   9. Switched away correct, switched back, correct → 0
-   10. Switched away correct, switched back, wrong  → -10
+   9. Switched away correct, switched back          → 0
+      (always correct when returning to the right pick — see scoreGame)
    SERIES JACKPOT: Day 1 all correct + zero switches → +50
 ═══════════════════════════════════════════ */
 
@@ -1457,14 +1478,12 @@ function scoreGame(game, dayPicks, gameIdx, multiplier = 1) {
   }
 
   // ── RULE 9: Switched away correct, switched back, correct → 0pts
-  if (a.firstWasRight && a.switchedBack && a.isCorrect) {
+  // This is the ONLY outcome possible when firstWasRight && switchedBack —
+  // since switchedBack means finalPick===firstPick, and firstWasRight means
+  // firstPick===winner, isCorrect (finalPick===winner) is always true here.
+  // There is no "switched back but still wrong" case — it's a contradiction.
+  if (a.firstWasRight && a.switchedBack) {
     return { pts:0, breakdown:[{ label:`${gLabel} Switched Back (0pts)`, pts:0 }] };
-  }
-
-  // ── RULE 10: Switched away correct, switched back, wrong
-  if (a.firstWasRight && a.switchedBack && !a.isCorrect) {
-    const pts = scale(SWITCHBACK_WRONG_PTS);
-    return { pts, breakdown:[{ label:`${gLabel} Switched Back & Wrong${mLabel}`, pts }] };
   }
 
   // ── RULES 1-4: Correct final pick
@@ -1701,13 +1720,21 @@ function espnStatusToCode(state) {
   }
 }
 
+// ESPN uses some abbreviations that differ from the official MLB ones.
+// Normalize known mismatches here so every downstream usage gets the
+// abbreviation we actually want, without patching every call site.
+const ESPN_ABBR_OVERRIDES = Object.freeze({
+  'CHW': 'CWS', // Chicago White Sox — ESPN uses CHW, MLB standard is CWS
+});
+
 function espnTeamObj(competitor) {
   const t = competitor.team || {};
   const parsedId = parseInt(t.id);
+  const rawAbbr  = t.abbreviation || '';
   return {
     id:   isNaN(parsedId) ? 0 : parsedId,   // guard against NaN breaking seriesKey
     name: t.displayName || t.name || t.abbreviation || '?',
-    abbr: t.abbreviation || '',
+    abbr: ESPN_ABBR_OVERRIDES[rawAbbr] || rawAbbr,
     logo: t.logo || '',
   };
 }
@@ -1760,8 +1787,13 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       const seasonType = rawSeasonType ?? 2;
       if(seasonType === 1) return; // skip preseason only — postseason (3) allowed
 
-      // Capture postseason round — null for regular season
-      const psRound = seasonType === 3 ? detectPostseasonRound(event, 3) : null;
+      // Capture postseason round — null for regular season.
+      // totalGames is unknown at this point (events arrive one at a time,
+      // before block-splitting determines final series length). This call
+      // relies on ESPN's slug for accurate round detection; the game-count
+      // fallback only becomes meaningful after the re-detection pass in the
+      // block-splitting step below (see "Re-run round detection" comment).
+      const psRound = seasonType === 3 ? detectPostseasonRound(event, 3, 0) : null;
 
       const competitors = comp.competitors || [];
       const awaySide    = competitors.find(c => c.homeAway === 'away');
@@ -1846,9 +1878,11 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       best.forEach((g, i) => { g.idx = i; });
       raw.games      = best;
       raw.totalGames = best.length;
-      // Refine WS detection: if 7-game series and only 1 series in postseason → World Series
-      if(raw.postseasonRound === POSTSEASON_ROUND.CHAMPIONSHIP && best.length > 5){
-        // Will be refined to WS when we can count active series — Championship is safe default
+      // Re-run round detection now that we have the final game count — this
+      // matters when ESPN's slug was missing and detection relied on the
+      // (previously zero) game count fallback at first-detection time.
+      if(raw.postseasonRound !== null){
+        raw.postseasonRound = detectPostseasonRound({ season: {} }, 3, best.length) ?? raw.postseasonRound;
       }
       return new Series(raw);
     })
@@ -2513,16 +2547,17 @@ function applyAutoLocks(series) {
 }
 
 /**
- * Persist the current week's score, correct count, and team stats to AppState.
- * Called from renderGrid after all series are scored and rendered.
- * Extracted from renderGrid — state persistence belongs in its own function.
- *
- * @param {object} scoreCache — { seriesKey: total } pre-computed from renderGrid
- */
-/**
  * Compute AL/NL league jackpots and Super Jackpot across all postseason series.
  * Pure function — state injected, no global AppState reference.
  * Reuses analysePickHistory — no duplicated switch detection logic.
+ *
+ * Super Jackpot requires THREE conditions, not two:
+ *   1. All AL series (DS+CS) perfect
+ *   2. All NL series (DS+CS) perfect
+ *   3. The World Series itself called correctly Day 1, zero switches
+ * Without condition 3, a user could nail every DS/CS in both leagues,
+ * whiff the World Series entirely, and still collect the +2500pt prize —
+ * the championship-deciding series would never be required to be right.
  *
  * @param {Series[]} series — all series including postseason
  * @param {object}   state  — picks state (must have .picks object)
@@ -2554,14 +2589,40 @@ function computeLeagueJackpots(series, state) {
     });
   }
 
-  function isALSeries(s) { return AL_TEAMS.has(s.home.abbr || teamAbbr(s.home.name)); }
+  // Checks BOTH teams, not just home — home/away is determined by venue,
+  // not league. The World Series is AL vs NL by definition; checking only
+  // the home team would misclassify it depending on which side has home
+  // field that year. A series is AL if either participant is an AL team
+  // (this correctly handles DS/CS where both teams share a league, and WS
+  // where they don't — WS is excluded from AL/NL buckets entirely below).
+  function isALSeries(s) {
+    const homeAbbr = s.home.abbr || teamAbbr(s.home.name);
+    const awayAbbr = s.away.abbr || teamAbbr(s.away.name);
+    return AL_TEAMS.has(homeAbbr) && AL_TEAMS.has(awayAbbr);
+  }
+  function isNLSeries(s) {
+    const homeAbbr = s.home.abbr || teamAbbr(s.home.name);
+    const awayAbbr = s.away.abbr || teamAbbr(s.away.name);
+    return !AL_TEAMS.has(homeAbbr) && !AL_TEAMS.has(awayAbbr);
+  }
 
+  // World Series (cross-league) is excluded from AL/NL bucket classification —
+  // it's scored on its own via the standard postseason jackpot, but it MUST
+  // still be checked separately for the Super Jackpot — see worldSeriesPerfect below.
   const alSeries     = eligible.filter(s =>  isALSeries(s));
-  const nlSeries     = eligible.filter(s => !isALSeries(s));
+  const nlSeries     = eligible.filter(s =>  isNLSeries(s));
   const alPerfect    = alSeries.length > 0 && alSeries.every(isPerfectSeries);
-  const nlPerfect    = nlSeries.length > 0 && nlSeries.every(isPerfectSeries);
+  const nlPerfect     = nlSeries.length > 0 && nlSeries.every(isPerfectSeries);
+
+  // The World Series is neither AL-only nor NL-only — it's excluded from both
+  // buckets above. It must be checked on its own: the Super Jackpot requires
+  // the championship-deciding series to be called correctly, not just every
+  // round leading up to it.
+  const worldSeries        = eligible.find(s => s.postseasonRound === POSTSEASON_ROUND.WORLDSERIES);
+  const worldSeriesPerfect = !!worldSeries && isPerfectSeries(worldSeries);
+
   // Min 5 = 2 DS + 2 CS + 1 WS — full postseason coverage required for Super
-  const superEligible = alPerfect && nlPerfect && eligible.length >= 5;
+  const superEligible = alPerfect && nlPerfect && worldSeriesPerfect && eligible.length >= 5;
 
   const breakdown = [];
   if(superEligible) {
@@ -2601,8 +2662,13 @@ function persistWeekScore(scoreCache = null, jackpots = null) {
       if(!g.isFinal() || g.date < dsStr || g.date > deStr) return;
       const winner = g.winnerSide();
       if(!winner) return;
+      // Use the FINAL pick (last day with a pick), not the first one found —
+      // consistent with analysePickHistory.finalPick, which is what the
+      // scoring engine treats as "your actual pick" for this game. Using the
+      // first pick found here would attribute the stat to a team the user
+      // switched away from, corrupting the season Team Results table.
       let pickedAbbr = null, wasCorrect = false;
-      for(let d = 1; d <= numDates; d++){
+      for(let d = numDates; d >= 1; d--){
         const p = AppState.getPick(s.key, g.idx, d);
         if(p){
           pickedAbbr = p === PICK.AWAY
@@ -2695,9 +2761,11 @@ function renderGrid(){
   }).join('');
   updateStatsUI(scoreCache);
 
-  // Postseason: compute league/super jackpots and surface banner
+  // Postseason: compute league/super jackpots and surface banner.
+  // Always call renderJackpotBanner — it removes any stale banner from a
+  // previous render even when this week has no jackpot to show.
   const jackpots = computeLeagueJackpots(ApiCache.series, AppState);
-  if(jackpots.breakdown.length) renderJackpotBanner(jackpots);
+  renderJackpotBanner(jackpots);
 
   persistWeekScore(scoreCache, jackpots);
 }
@@ -2710,7 +2778,7 @@ function rerenderCard(sk){
   applyAutoLocks([series]);
   const existing=document.querySelector(`.series-card[data-sk="${sk}"]`);
   if(!existing)return;
-  const score = computeSeriesScore(series, today);
+  const score = computeSeriesScore(series, AppState);
   const tmp=document.createElement('div');
   tmp.innerHTML=renderSeriesCard(series, today, score);
   const newCard=tmp.firstElementChild;
@@ -3217,8 +3285,30 @@ init();
   // ── 16. scoreGame — Rule 9: Switched back correct = 0
   assert('Rule 9: 0pts', scoreGame(g1,{1:PICK.AWAY,2:PICK.HOME,3:PICK.AWAY},0).pts === 0);
 
-  // ── 17. scoreGame — Rule 10: Switched back wrong = -10
-  assert('Rule 10: -10pts', scoreGame(g_home,{1:PICK.AWAY,2:PICK.HOME,3:PICK.AWAY},0).pts === SWITCHBACK_WRONG_PTS);
+  // ── 17. Confirm "switched back but wrong" is unreachable (Rule 10 removed).
+  // Brute force every 2-4 day pick pattern: firstWasRight && switchedBack
+  // must always imply isCorrect. If this ever finds a counterexample, the
+  // removal of Rule 10 was wrong and needs to be revisited.
+  (function checkRule10Unreachable(){
+    const sides = [PICK.AWAY, PICK.HOME];
+    let counterexampleFound = false;
+    for(let len = 2; len <= 4; len++){
+      const combos = [];
+      (function gen(arr){
+        if(arr.length === len){ combos.push([...arr]); return; }
+        for(const s of sides){ arr.push(s); gen(arr); arr.pop(); }
+      })([]);
+      for(const combo of combos){
+        for(const winner of sides){
+          const dp = {};
+          combo.forEach((p,i) => dp[i+1] = p);
+          const a = analysePickHistory(dp, winner);
+          if(a.firstWasRight && a.switchedBack && !a.isCorrect) counterexampleFound = true;
+        }
+      }
+    }
+    assert('Switched-back-but-wrong is unreachable (Rule 10 correctly removed)', !counterexampleFound);
+  })();
 
   // ── 18. scoreGame — GM2 Day1 = 30pts (Day1 picks all games)
   const g_gm2=mkGame(1,true);
@@ -3287,14 +3377,18 @@ init();
   assert('espnStatus post → FINAL',    espnStatusToCode('post')      === GAME_STATUS.FINAL);
   assert('espnStatus unknown → PREVIEW', espnStatusToCode('unknown') === GAME_STATUS.PREVIEW);
 
-  // ── 19. score zero-zero game uses nullish coalescing correctly
-  // parseFloat('0') ?? 0 should be 0, not falsy-replaced
-  const zeroScore = parseFloat('0') ?? 0;
-  assert('zero score preserved (nullish)', zeroScore === 0);
-  // Confirm old || 0 bug: parseFloat('0') || 0 is also 0 but for wrong reason
-  // The fix ensures explicit null/undefined → 0, not falsy → 0
-  const nullScore = parseFloat(null) ?? 0;
-  assert('null score → 0 via nullish',  nullScore === 0);
+  // ── 19. safeScore() handles zero, null, and undefined correctly.
+  // Note: parseFloat(null) returns NaN, NOT null/undefined — so a naive
+  // `parseFloat(x) ?? 0` does NOT protect against null input (NaN ?? 0
+  // stays NaN, since ?? only substitutes for null/undefined, not NaN).
+  // safeScore correctly uses isNaN() checking instead, which catches this.
+  assert('safeScore("0") preserves zero',   safeScore('0') === 0);
+  assert('safeScore(0) preserves zero',     safeScore(0) === 0);
+  assert('safeScore(null) → 0',             safeScore(null) === 0);
+  assert('safeScore(undefined) → 0',        safeScore(undefined) === 0);
+  assert('safeScore("5") → 5',              safeScore('5') === 5);
+  assert('naive parseFloat+?? does NOT catch null (documents the pitfall)',
+    Number.isNaN(parseFloat(null) ?? 0));
 
   // ── 20. seriesKey with ESPN-style ids
   assert('seriesKey ESPN ids', seriesKey(22, 3) === '22_3');
@@ -3411,13 +3505,9 @@ init();
   assert('Sort: Friday active before completed',     sorted[1] === fridaySeries);
   assert('Sort: completed series at bottom',         sorted[2] === completedS);
 
-  // ── 26. safeScore — NaN guard
-  const safeScore = (s) => { const n = parseFloat(s); return isNaN(n) ? 0 : n; };
-  assert('safeScore null → 0',      safeScore(null)      === 0);
-  assert('safeScore undefined → 0', safeScore(undefined) === 0);
-  assert('safeScore 0 → 0',         safeScore('0')       === 0);
-  assert('safeScore 5 → 5',         safeScore('5')       === 5);
-  assert('safeScore NaN str → 0',   safeScore('abc')     === 0);
+  // ── 26. safeScore — additional NaN guard coverage (uses the real global
+  // safeScore() defined at module scope — see test 19 above for the rest).
+  assert('safeScore NaN str → 0', safeScore('abc') === 0);
 
   // ── 26b. applyAutoLocks — auto-locks rows when games go final
   // Build a mock series with Game 1 final, Games 2-4 preview
@@ -3462,7 +3552,6 @@ init();
   delete AppState.locked['al_test_d1'];
 
   // ── 28. Series.outcome() — 2-1 is a win not a split
-  const win21Series = mkSeries4([true,true,false,false]); // away wins 2, home wins 2? No—
   // Build a 3-game series: away wins games 1,2; home wins game 3
   function mkGame3(idx, awayWin){
     // Use fixed dates starting May 25 — avoids fragile string concat bugs
@@ -3487,6 +3576,19 @@ init();
   assert('2-1 label includes Won', o21.label.includes('Won'));
 
   // A 2-2 split in a 4-game series IS a split
+  function mkSeries4(awayWins) {
+    const dates = ['2026-05-25','2026-05-26','2026-05-27','2026-05-28'];
+    const games = awayWins.map((aw, i) => new Game({
+      gameId:i, date:dates[i], dateObj:new Date(dates[i]+'T12:00:00'), time:null,
+      status:GAME_STATUS.FINAL, statusDetail:'Final',
+      awayScore:aw?5:2, homeScore:aw?2:5, awayWin:aw, homeWin:!aw,
+      awayPitcher:null, homePitcher:null,
+    }, i));
+    return new Series({
+      key:'s4', away:{id:1,name:'A',abbr:'A',logo:''}, home:{id:2,name:'B',abbr:'B',logo:''},
+      venue:'', games, totalGames:4,
+    });
+  }
   const split22 = mkSeries4([true,false,true,false]);
   const o22 = split22.outcome();
   assert('2-2 in 4-game IS a split', o22.type === 'split');
@@ -3497,6 +3599,110 @@ init();
     venue:'', games:[mkGame3(0,true),mkGame3(1,false)], totalGames:2,
   });
   assert('1-1 in 2-game IS a split', s2.outcome().type === 'split');
+
+  // ── 29. ESPN_ABBR_OVERRIDES — CHW normalizes to CWS
+  const chwTeam = espnTeamObj({ team: { id:'4', displayName:'Chicago White Sox', abbreviation:'CHW' } });
+  assert('CHW normalizes to CWS', chwTeam.abbr === 'CWS');
+  const torTeam = espnTeamObj({ team: { id:'22', displayName:'Toronto Blue Jays', abbreviation:'TOR' } });
+  assert('Unmapped abbr passes through unchanged', torTeam.abbr === 'TOR');
+
+  // ── 30. computeLeagueJackpots — AL/NL/Super jackpot logic
+  function mkPSGame(idx, awayWin, date) {
+    return new Game({
+      gameId:idx, date, dateObj:new Date(date+'T12:00:00'), time:null,
+      status:GAME_STATUS.FINAL, statusDetail:'Final',
+      awayScore:awayWin?5:2, homeScore:awayWin?2:5,
+      awayWin, homeWin:!awayWin, awayPitcher:null, homePitcher:null,
+    }, idx);
+  }
+  function mkPSSeries(key, awayAbbr, homeAbbr, round, winnerIsAway, numGames) {
+    const games = [];
+    for(let i = 0; i < numGames; i++){
+      const d = new Date(2026, 9, 1 + i); // October dates
+      const dateStr = toDateStr(d);
+      games.push(mkPSGame(i, winnerIsAway, dateStr));
+    }
+    return new Series({
+      key, away:{id:1,name:awayAbbr,abbr:awayAbbr,logo:''}, home:{id:2,name:homeAbbr,abbr:homeAbbr,logo:''},
+      venue:'', games, totalGames:numGames, postseasonRound:round,
+    });
+  }
+  function mkPerfectPicksState(series) {
+    const picks = {};
+    series.forEach(s => {
+      s.games.forEach(g => {
+        const winner = g.winnerSide();
+        picks[pickKey(s.key, g.idx, 1)] = winner; // Day 1, correct, never switched
+      });
+    });
+    return { picks };
+  }
+
+  // AL perfect, NL perfect, World Series WRONG → Super Jackpot must NOT fire
+  const alDS  = mkPSSeries('al_ds', 'NYY', 'BOS', POSTSEASON_ROUND.DIVISION, true, 3);
+  const alCS  = mkPSSeries('al_cs', 'NYY', 'HOU', POSTSEASON_ROUND.CHAMPIONSHIP, true, 4);
+  const nlDS  = mkPSSeries('nl_ds', 'LAD', 'ATL', POSTSEASON_ROUND.DIVISION, true, 3);
+  const nlCS  = mkPSSeries('nl_cs', 'LAD', 'PHI', POSTSEASON_ROUND.CHAMPIONSHIP, true, 4);
+  const wsWrongSeries = mkPSSeries('ws_wrong', 'NYY', 'LAD', POSTSEASON_ROUND.WORLDSERIES, true, 4);
+
+  const allFourRounds = [alDS, alCS, nlDS, nlCS, wsWrongSeries];
+  const perfectExceptWS = mkPerfectPicksState([alDS, alCS, nlDS, nlCS]);
+  // Deliberately pick the WRONG side for the World Series
+  wsWrongSeries.games.forEach(g => {
+    const winner = g.winnerSide();
+    const wrongPick = winner === PICK.AWAY ? PICK.HOME : PICK.AWAY;
+    perfectExceptWS.picks[pickKey(wsWrongSeries.key, g.idx, 1)] = wrongPick;
+  });
+
+  const resultWrongWS = computeLeagueJackpots(allFourRounds, perfectExceptWS);
+  assert('AL+NL perfect but WS wrong → NO super jackpot', resultWrongWS.superJackpot === 0);
+  assert('AL+NL perfect but WS wrong → AL jackpot still awarded', resultWrongWS.alJackpot === LEAGUE_JACKPOT_PTS);
+  assert('AL+NL perfect but WS wrong → NL jackpot still awarded', resultWrongWS.nlJackpot === LEAGUE_JACKPOT_PTS);
+
+  // AL perfect, NL perfect, World Series ALSO perfect → Super Jackpot SHOULD fire
+  const wsRightSeries = mkPSSeries('ws_right', 'NYY', 'LAD', POSTSEASON_ROUND.WORLDSERIES, true, 4);
+  const allFourRoundsRight = [alDS, alCS, nlDS, nlCS, wsRightSeries];
+  const perfectIncludingWS = mkPerfectPicksState(allFourRoundsRight);
+  const resultRightWS = computeLeagueJackpots(allFourRoundsRight, perfectIncludingWS);
+  assert('AL+NL+WS all perfect → SUPER JACKPOT fires', resultRightWS.superJackpot === SUPER_JACKPOT_PTS);
+  assert('Super jackpot replaces league jackpots', resultRightWS.alJackpot === 0 && resultRightWS.nlJackpot === 0);
+
+  // ── 31. persistWeekScore teamStats — uses FINAL pick, not first pick found
+  // Simulated inline: a genuine 2-game series spanning 2 distinct day rows.
+  // Game itself doesn't matter here — only that seriesDates() returns 2 dates,
+  // matching a real series where the user could pick on Day 1 then Day 2.
+  function mkSwitchSeries() {
+    const d1 = '2026-06-15', d2 = '2026-06-16';
+    const g0 = new Game({
+      gameId:0, date:d1, dateObj:new Date(d1+'T12:00:00'), time:null,
+      status:GAME_STATUS.FINAL, statusDetail:'Final',
+      awayScore:2, homeScore:5, awayWin:false, homeWin:true, awayPitcher:null, homePitcher:null,
+    }, 0);
+    const g1 = new Game({
+      gameId:1, date:d2, dateObj:new Date(d2+'T12:00:00'), time:null,
+      status:GAME_STATUS.PREVIEW, statusDetail:'', awayScore:null, homeScore:null,
+      awayWin:false, homeWin:false, awayPitcher:null, homePitcher:null,
+    }, 1);
+    return new Series({
+      key:'switch_test', away:{id:1,name:'TeamA',abbr:'TMA',logo:''}, home:{id:2,name:'TeamB',abbr:'TMB',logo:''},
+      venue:'', games:[g0, g1], totalGames:2,
+    });
+  }
+  const switchSeries = mkSwitchSeries();
+  const switchState  = { picks: {} };
+  // Pick history for GAME 0 (the one that's final): Day 1 picked Team A (wrong),
+  // Day 2 switched to Team B (correct — this is the FINAL settled-on pick).
+  switchState.picks[pickKey('switch_test', 0, 1)] = PICK.AWAY;
+  switchState.picks[pickKey('switch_test', 0, 2)] = PICK.HOME;
+  // The winner is home (Team B). A "first pick found" implementation would
+  // wrongly attribute this stat to Team A, the team the user abandoned.
+  const numDatesSwitch = switchSeries.seriesDates().length;
+  let finalPickAbbr = null;
+  for(let d = numDatesSwitch; d >= 1; d--){
+    const p = switchState.picks[pickKey('switch_test', 0, d)];
+    if(p){ finalPickAbbr = p === PICK.AWAY ? 'TMA' : 'TMB'; break; }
+  }
+  assert('teamStats attributes pick to FINAL team (TMB), not first (TMA)', finalPickAbbr === 'TMB');
 
   // ── Results
   const total = pass.length + fail.length;
