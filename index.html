@@ -1065,7 +1065,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.72';
+const APP_VERSION  = '2026.05.28.80';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1308,6 +1308,27 @@ class Game {
   // Not used in production render path — slot state is managed by getSlotStates().
   isFuture(today){const d=new Date(this.dateObj);d.setHours(0,0,0,0);return d>today;}
   isPickable(today){return!this.isFinal()&&!this.isFuture(today)&&!this.isPostponed();}
+  /**
+   * A "stranded" game is neither final, postponed, NOR currently live —
+   * but its scheduled date has already passed (relative to today). This
+   * happens when ESPN reports a postponement by simply never resolving
+   * the original event — it stays at PREVIEW status indefinitely instead
+   * of flipping to POSTPONED — and the actual makeup game (if any) gets
+   * scheduled on a date outside this series' visible window. Without this
+   * check, such a game blocks Series.outcome() from ever marking the
+   * series "done", even when every realistically-completable game has
+   * been played.
+   *
+   * CRITICAL: must exclude isLive(). A game suspended overnight or
+   * running past midnight (extra innings, rain delay resumption) is
+   * dated "yesterday" but is genuinely still being played — it must
+   * never be treated as abandoned, or Series.outcome() could declare
+   * the series complete while a real game is still in progress.
+   */
+  isStranded(today){
+    const d = new Date(this.dateObj); d.setHours(0,0,0,0);
+    return !this.isFinal() && !this.isPostponed() && !this.isLive() && d < today;
+  }
   evaluate(pick){
     if(!this.isFinal()||!pick)return null;
     return(pick===PICK.AWAY&&this.awayWin)||(pick===PICK.HOME&&this.homeWin)?'correct':'wrong';
@@ -1354,12 +1375,21 @@ class Series {
   }
 
   outcome(){
-    const done=this.completedGames();
+    const today = todayMidnight();
+    const done  = this.completedGames();
     if(!done.length)return null;
-    const awayW=done.filter(g=>g.awayWin).length;
-    const homeW=done.filter(g=>g.homeWin).length;
-    const total=this.totalGames;
-    const isDone=done.length===total;
+    const awayW = done.filter(g=>g.awayWin).length;
+    const homeW = done.filter(g=>g.homeWin).length;
+
+    // A stranded game (see Game.isStranded) is one ESPN never resolved past
+    // its scheduled date — effectively a phantom slot that will never play
+    // within this series' visible window. Exclude it from the "total games"
+    // count used to determine if the series is done, so a 5-game series with
+    // one stranded game correctly resolves as complete after 4 real games.
+    const strandedCount = this.games.filter(g => g.isStranded(today)).length;
+    const total   = this.totalGames - strandedCount;
+    const isDone  = done.length === total && total > 0;
+
     const awayLabel = this.away.abbr || teamAbbr(this.away.name);
     const homeLabel = this.home.abbr || teamAbbr(this.home.name);
     if(isDone){
@@ -2162,10 +2192,25 @@ function renderGameSlot({ game, series, dayRow, today, isPrefilled, isMissed, is
  *   isDay1Open=true (Day 1, not yet past):
  *     all non-final games → isPickable (full series preview pick)
  *   isDay1Open=false (Day 2+ OR past Day 1):
- *     g.idx < dayRow-1 AND final   → isPrefilled (show result)
+ *     final game            → isPrefilled (show result — see note below)
  *     g.idx < dayRow-1 AND !final  → isMissed (dimmed — window passed)
  *     g.idx === dayRow-1           → open if rowOpen && not final
  *     g.idx > dayRow-1             → isBeyondRow (dimmed — not yet available)
+ *
+ * IMPORTANT: isPrefilled is determined purely by game.isFinal(), NOT by
+ * comparing g.idx to dayRow. An earlier version compared g.idx < dayRow-1,
+ * which silently assumes "GM N always resolves on Day N" — a false
+ * assumption whenever any game in the series finishes earlier than its
+ * array-position-implied day. In practice this happens constantly: GM 3
+ * (idx=2) can easily become final by Day 2 if it was played as part of a
+ * doubleheader, or simply scheduled/completed out of strict index order.
+ * Under the old idx-based check, such a game would fall into NONE of the
+ * three states (not prefilled, not missed, not beyond-row) on any row
+ * after it resolved — silently breaking both its winner-card pick
+ * attribution (falling back to "no pick" / grey styling instead of
+ * green/red) and its correct/wrong evaluation on every subsequent row.
+ * isFinal() alone is the only reliable signal — a game's index never
+ * tells you when it actually played.
  *
  * Missing a day = missing that scoring opportunity. No retroactive picks.
  */
@@ -2173,13 +2218,12 @@ function getSlotStates(games, dayRow, rowOpen, isDay1Open = false, isTodayRow = 
   const result = new Map();
 
   games.forEach(g => {
-    const isPrefilled = g.isFinal() && (g.idx < dayRow - 1);
+    // isPrefilled = game already has a real outcome. Index position is
+    // irrelevant — only whether the game has actually been played matters.
+    const isPrefilled = g.isFinal();
 
-    // isMissed/isBeyondRow only apply to past rows — not today's or future rows.
-    // On today's row ALL remaining non-final games are open for picking.
-    // On future rows, rowOpen=false makes isPickable=false regardless of isMissed/isBeyondRow,
-    // so isMissed may be technically true on future rows but has no visual effect —
-    // the entire future row is dimmed at the row level, not the slot level.
+    // isMissed/isBeyondRow only apply to NON-final games on past rows —
+    // not today's or future rows, and never to games that already resolved.
     const isMissed    = !isDay1Open && !isTodayRow && !g.isFinal() && g.idx < dayRow - 1;
     const isBeyondRow = !isDay1Open && !isTodayRow && !g.isFinal() && g.idx > dayRow - 1;
     const isPickable  = rowOpen && !g.isFinal() && !isMissed && !isBeyondRow;
@@ -2364,7 +2408,13 @@ function renderSeriesCard(series, today, score = null){
 
     <div class="card-topbar">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span class="series-badge">${series.totalGames}-Game Series</span>
+        <span class="series-badge">${
+          (() => {
+            const strandedN = series.games.filter(g => g.isStranded(today)).length;
+            const realTotal = series.totalGames - strandedN;
+            return strandedN > 0 ? `${realTotal}-Game Series` : `${series.totalGames}-Game Series`;
+          })()
+        }</span>
         ${series.isPostseason && series.isPostseason() ? `<span class="series-badge postseason-badge">${
           series.postseasonRound === POSTSEASON_ROUND.WILDCARD     ? '★ Wild Card' :
           series.postseasonRound === POSTSEASON_ROUND.DIVISION     ? `★ ×${series.multiplier()} Division Series` :
@@ -2409,10 +2459,6 @@ function renderSeriesCard(series, today, score = null){
 ═══════════════════════════════════════════ */
 
 /**
- * Pure function — no DOM, fully testable.
- * Returns { correct, wrong, pending, totalScore, pct }
- */
-/**
  * Compute weekly stats — only counts games within the display week range.
  * Separates wrong picks from missed picks for accurate accuracy calculation.
  * Each game is counted exactly ONCE regardless of how many day rows it appears in.
@@ -2456,7 +2502,13 @@ function computeWeekStats(series, dsStr, deStr, precomputedScores = null){
         if(hadCorrect)   correct++;
         else if(hadPick) wrong++;   // picked wrong on every day tried
         else             missed++;  // no pick made — don't penalise accuracy
-      } else if(!g.isPostponed()){
+      } else if(!g.isPostponed() && !g.isStranded(todayMidnight())){
+        // Stranded games (see Game.isStranded) are excluded from pending —
+        // counting them here would contradict Series.outcome(), which
+        // already treats them as effectively resolved/excluded once every
+        // other game in the series has finished. Without this, the stats
+        // row could show "PENDING: 1" for a series the card below already
+        // displays as a completed sweep.
         pending++;
       }
     });
@@ -3473,6 +3525,25 @@ init();
   assert('Day3 today: Game4 pickable',      day3States.get(prevG3b).isPickable  === true);
   assert('Day3 today: Game4 not beyondRow', day3States.get(prevG3b).isBeyondRow === false);
 
+  // ── 23b. getSlotStates — out-of-order resolution (the exact reported bug).
+  // GM3 (idx=2) becomes final on Day 2's row already — finishing EARLIER
+  // than its array position would suggest under the old idx<dayRow-1 logic.
+  // On Day 3's row, GM3 must still show as prefilled (green/red winner
+  // card with correct pick attribution), not fall through to "no state".
+  const gm3EarlyFinal = mkGame(2, true); // idx=2, but already final
+  const gm4StillOpen  = mkPreviewGame(3);
+  const day3OutOfOrderStates = getSlotStates(
+    [mkGame(0, true), mkGame(1, false), gm3EarlyFinal, gm4StillOpen], 3, true, false, false
+  );
+  assert('Out-of-order: GM3 (idx=2) final-early is prefilled on Day 3',
+    day3OutOfOrderStates.get(gm3EarlyFinal).isPrefilled === true);
+  assert('Out-of-order: GM3 is NOT missed (it has a real outcome)',
+    day3OutOfOrderStates.get(gm3EarlyFinal).isMissed === false);
+  assert('Out-of-order: GM3 is NOT beyondRow (it has a real outcome)',
+    day3OutOfOrderStates.get(gm3EarlyFinal).isBeyondRow === false);
+  assert('Out-of-order: GM3 is NOT pickable (already final)',
+    day3OutOfOrderStates.get(gm3EarlyFinal).isPickable === false);
+
   // ── 24. getSlotStates — missed slot (past row, game not final)
   const missedG = mkPreviewGame(0);
   const day2MissedStates = getSlotStates([missedG, mkPreviewGame(1)], 2, false);
@@ -3703,6 +3774,106 @@ init();
     if(p){ finalPickAbbr = p === PICK.AWAY ? 'TMA' : 'TMB'; break; }
   }
   assert('teamStats attributes pick to FINAL team (TMB), not first (TMA)', finalPickAbbr === 'TMB');
+
+  // ── 32. Stranded game handling — a postponed/never-resolved game should
+  // not block a series from being marked complete once every other game
+  // has a real outcome. This is the exact scenario reported: a 5-game
+  // series where GM 1 was postponed and rescheduled outside this week's
+  // window, while GM 2-5 resolved to a 4-0 sweep.
+  (function checkStrandedGameHandling(){
+    const today = todayMidnight();
+    const pastDate = new Date(today); pastDate.setDate(pastDate.getDate() - 5);
+    const pastDateStr = toDateStr(pastDate);
+
+    // GM 1: still PREVIEW status, but its date is 5 days in the past —
+    // this is the "stranded" game (ESPN never flagged it postponed, and
+    // never resolved it; the real makeup game is outside this window).
+    const strandedGame = new Game({
+      gameId:0, date:pastDateStr, dateObj:new Date(pastDateStr+'T12:00:00'), time:null,
+      status:GAME_STATUS.PREVIEW, statusDetail:'', awayScore:null, homeScore:null,
+      awayWin:false, homeWin:false, awayPitcher:null, homePitcher:null,
+    }, 0);
+
+    assert('isStranded() true for past-dated unresolved game',
+      strandedGame.isStranded(today) === true);
+
+    const freshPreviewGame = new Game({
+      gameId:0, date:toDateStr(today), dateObj:new Date(toDateStr(today)+'T12:00:00'), time:null,
+      status:GAME_STATUS.PREVIEW, statusDetail:'', awayScore:null, homeScore:null,
+      awayWin:false, homeWin:false, awayPitcher:null, homePitcher:null,
+    }, 0);
+    assert('isStranded() false for a game scheduled today', freshPreviewGame.isStranded(today) === false);
+
+    // Regression: a LIVE game dated yesterday (suspended overnight, extra
+    // innings past midnight, rain delay resumption) must NEVER be treated
+    // as stranded — it's genuinely still being played, not abandoned.
+    const yesterdayDate = new Date(today); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayStr  = toDateStr(yesterdayDate);
+    const liveFromYesterday = new Game({
+      gameId:0, date:yesterdayStr, dateObj:new Date(yesterdayStr+'T12:00:00'), time:null,
+      status:GAME_STATUS.LIVE, statusDetail:'Top 11th', awayScore:3, homeScore:3,
+      awayWin:false, homeWin:false, awayPitcher:null, homePitcher:null,
+    }, 0);
+    assert('isStranded() false for a LIVE game from yesterday (suspended/resumed)',
+      liveFromYesterday.isStranded(today) === false);
+
+    // GM 2-5: all final, CHC wins all 4 — matches the reported "CHC WON 4-0"
+    function mkFinalGame(idx, dayOffset) {
+      const d = new Date(today); d.setDate(d.getDate() - (4 - dayOffset));
+      const dateStr = toDateStr(d);
+      return new Game({
+        gameId:idx, date:dateStr, dateObj:new Date(dateStr+'T12:00:00'), time:null,
+        status:GAME_STATUS.FINAL, statusDetail:'Final',
+        awayScore:3, homeScore:9, awayWin:false, homeWin:true,
+        awayPitcher:null, homePitcher:null,
+      }, idx);
+    }
+    const g2 = mkFinalGame(1, 1);
+    const g3 = mkFinalGame(2, 2);
+    const g4 = mkFinalGame(3, 3);
+    const g5 = mkFinalGame(4, 4);
+
+    const strandedSeries = new Series({
+      key:'stranded_test',
+      away:{id:1,name:'New York Mets',abbr:'NYM',logo:''},
+      home:{id:2,name:'Chicago Cubs',abbr:'CHC',logo:''},
+      venue:'Citi Field',
+      games:[strandedGame, g2, g3, g4, g5],
+      totalGames:5,
+    });
+
+    const result = strandedSeries.outcome();
+    assert('Stranded series resolves to done (not stuck live)', result !== null && result.type !== 'live');
+    assert('Stranded 4-0 series correctly shows as a sweep', result.type === 'sweep');
+    assert('Stranded series sweep label mentions CHC', result.label.includes('CHC'));
+
+    // Series with a stranded game but NOT yet enough completed games should
+    // still correctly report as live/in-progress, not falsely "done".
+    const strandedSeriesIncomplete = new Series({
+      key:'stranded_incomplete',
+      away:{id:1,name:'New York Mets',abbr:'NYM',logo:''},
+      home:{id:2,name:'Chicago Cubs',abbr:'CHC',logo:''},
+      venue:'Citi Field',
+      games:[strandedGame, g2, freshPreviewGame, g4, g5],
+      totalGames:5,
+    });
+    const incompleteResult = strandedSeriesIncomplete.outcome();
+    assert('Series with stranded game + still-pending game stays live',
+      incompleteResult !== null && incompleteResult.type === 'live');
+
+    // Regression: computeWeekStats' pending count must agree with
+    // Series.outcome() — a stranded game should not show as "pending" on
+    // the stats row when the series card below already shows it complete.
+    const dsWide = toDateStr(new Date(2020,0,1));
+    const deWide = toDateStr(new Date(2030,0,1));
+    const strandedOnlySeries = new Series({
+      key:'pending_consistency_test',
+      away:{id:1,name:'A',abbr:'A',logo:''}, home:{id:2,name:'B',abbr:'B',logo:''},
+      venue:'', games:[strandedGame], totalGames:1,
+    });
+    const pendingCheck = computeWeekStats([strandedOnlySeries], dsWide, deWide, {pending_consistency_test:0});
+    assert('computeWeekStats pending excludes stranded games', pendingCheck.pending === 0);
+  })();
 
   // ── Results
   const total = pass.length + fail.length;
