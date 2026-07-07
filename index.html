@@ -13,7 +13,7 @@
 <!-- PWA — standalone launch from iPad/iPhone home screen -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Diamond">
+<meta name="apple-mobile-web-app-title" content="30 Diamond">
 
 <!-- Theme color — matches app background for status bar on Android/Safari -->
 <meta name="theme-color" content="#0a0c0f">
@@ -21,7 +21,7 @@
 <!-- Prevent iOS from detecting phone numbers and auto-linking them -->
 <meta name="format-detection" content="telephone=no">
 
-<title>Diamond</title>
+<title>30 Diamond</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;500;600;700;800;900&family=Barlow:wght@300;400;500;600&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 /* ─────────────────────────────────────────
@@ -234,6 +234,11 @@ main{
 }
 .postseason-badge{
   color:var(--accent);border-color:var(--accent);background:var(--accent-dim);
+}
+/* Continuation badge — series started in prior week, this game spills into current week */
+.continuation-badge{
+  color:var(--text-muted);border-color:var(--border2);
+  background:transparent;letter-spacing:0.12em;
 }
 .series-venue{
   font-size:10px;color:var(--text-muted);font-weight:300;
@@ -873,58 +878,6 @@ footer.disclaimer{
 .week-nav-btn:disabled{opacity:0.2;cursor:not-allowed;}
 
 /* ─────────────────────────────────────────
-   STREAM MODE — body.stream-mode enlarges all text for 1080p
-───────────────────────────────────────── */
-body.stream-mode header { padding: 0 32px; }
-body.stream-mode .header-inner { height: 72px; }
-body.stream-mode .logo-mark { width: 56px; height: 56px; }
-body.stream-mode .logo-mark::before { inset: 6px; }
-body.stream-mode .logo-mark::after  { inset: 10px; }
-body.stream-mode .logo-mark-num     { font-size: 17px; }
-body.stream-mode .logo-text-main    { font-size: 24px; }
-body.stream-mode .logo-text-top     { font-size: 10px; }
-body.stream-mode .week-range        { font-size: 13px; }
-body.stream-mode .pill-value        { font-size: 18px; }
-body.stream-mode .pill-label        { font-size: 12px; }
-body.stream-mode .view-btn          { font-size: 12px; padding: 6px 16px; }
-body.stream-mode .stat-block        { padding: 16px 20px; }
-body.stream-mode .stat-block .s-label { font-size: 12px; }
-body.stream-mode .stat-block .s-value { font-size: 32px; }
-body.stream-mode .stat-block .s-sub   { font-size: 12px; }
-body.stream-mode .series-grid { grid-template-columns: repeat(auto-fill, minmax(440px,1fr)); gap: 18px; }
-body.stream-mode .team-abbr-large   { font-size: 52px; }
-body.stream-mode                    { --slot-height: 128px; }
-body.stream-mode .h-abbr                      { font-size: 28px; }
-body.stream-mode .slot-half.is-picked .h-abbr { font-size: 30px; }
-body.stream-mode .slot-winner-card .w-abbr    { font-size: 34px; }
-body.stream-mode .slot-locked-card .lp-abbr   { font-size: 34px; }
-body.stream-mode .w-score       { font-size: 12px; }
-body.stream-mode .w-pick-note   { font-size: 10px; }
-body.stream-mode .slot-pts      { font-size: 11px; }
-body.stream-mode .row-day-label { font-size: 13px; }
-body.stream-mode .row-status-tag{ font-size: 10px; padding: 3px 8px; }
-body.stream-mode .lock-btn      { font-size: 12px; padding: 13px; }
-body.stream-mode .outcome-label { font-size: 11px; }
-body.stream-mode .outcome-value { font-size: 14px; }
-body.stream-mode .season-table th           { font-size: 12px; padding: 10px 18px; }
-body.stream-mode .season-table td           { font-size: 16px; padding: 13px 18px; }
-body.stream-mode .season-table td.col-score { font-size: 20px; }
-body.stream-mode .season-table td.col-team  { font-size: 20px; }
-
-/* Pulsing live indicator — visible only in stream mode */
-.stream-indicator{
-  display:none;align-items:center;gap:5px;
-  font-family:'Share Tech Mono',monospace;font-size:9px;
-  letter-spacing:0.14em;text-transform:uppercase;color:#ef4444;
-  animation:pulse-red 1.5s ease-in-out infinite;
-}
-@keyframes pulse-red{0%,100%{opacity:1;}50%{opacity:0.3;}}
-.stream-indicator::before{
-  content:'';width:6px;height:6px;border-radius:50%;
-  background:#ef4444;display:inline-block;
-}
-
-/* ─────────────────────────────────────────
    RESPONSIVE
 ───────────────────────────────────────── */
 @media(max-width:680px){
@@ -964,8 +917,6 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
         <span class="pill-label" id="scoreLabel">Score</span>
         <span class="pill-value" id="headerScore">—</span>
       </div>
-      <span class="stream-indicator" id="streamIndicator">Live</span>
-      <button class="view-btn" id="btnStream" onclick="toggleStreamMode()" title="Stream mode">⊞</button>
     </div>
   </div>
 </header>
@@ -980,7 +931,12 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
     <div class="stat-block">
       <div class="s-label">Correct</div>
       <div class="s-value" id="statCorrect">0</div>
-      <div class="s-sub">games called</div>
+      <div class="s-sub">called</div>
+    </div>
+    <div class="stat-block">
+      <div class="s-label">Wrong</div>
+      <div class="s-value" id="statWrong">0</div>
+      <div class="s-sub">missed call</div>
     </div>
     <div class="stat-block">
       <div class="s-label">Pending</div>
@@ -1065,7 +1021,7 @@ body.stream-mode .season-table td.col-team  { font-size: 20px; }
    Format: 'YYYY.MM.DD.build' — e.g. increment
    the last number for same-day releases.
 ═══════════════════════════════════════════ */
-const APP_VERSION  = '2026.05.28.80';
+const APP_VERSION  = '2026.05.28.88';
 const VERSION_KEY  = 'diamond_version';
 
 function bustCache() {
@@ -1358,6 +1314,15 @@ class Series {
   isPostseason(){ return this.postseasonRound !== null; }
   isWildCard()  { return this.postseasonRound === POSTSEASON_ROUND.WILDCARD; }
   multiplier()  { return postseasonMultiplier(this.postseasonRound); }
+  /**
+   * Returns true when this series started before the given display week start.
+   * Used to show a "Cont." badge on cross-week spillover series — series that
+   * began in a prior week but have games continuing into the current view.
+   * @param {string} displayWeekStart — 'YYYY-MM-DD' Monday of the display week
+   */
+  isContinuation(displayWeekStart){
+    return toDateStr(new Date(this.startDate())) < displayWeekStart;
+  }
   startDate(){return this.games[0]?.dateObj;}
   endDate(){return this.games[this.games.length-1]?.dateObj;}
   completedGames(){return this.games.filter(g=>g.isFinal());}
@@ -1692,11 +1657,13 @@ const DataSource = {
   async fetchSchedule(startDate, endDate) {
     // Single range call — more reliable than day-by-day for completed games.
     // ESPN scoreboard ?dates=YYYYMMDD-YYYYMMDD returns all games in range.
-    // limit=200 safely covers a full week (~105 max games). If ESPN ever
-    // paginates, games beyond 200 would be silently dropped — not a current concern.
+    // limit=400 covers a 14-day fetch window (~210 max games). The fetch now
+    // extends 7 days back to surface cross-week series in both week views.
+    // 200 was sized for a single week — doubled to match the wider window.
+    // If ESPN ever paginates beyond 400, games would be silently dropped.
     const start      = startDate.replace(/-/g, '');
     const end        = endDate.replace(/-/g, '');
-    const url        = `${ESPN_API}/scoreboard?dates=${start}-${end}&limit=200`;
+    const url        = `${ESPN_API}/scoreboard?dates=${start}-${end}&limit=400`;
     const fetchYear  = startDate.slice(0, 4); // passed to extractGameDate
 
     let data;
@@ -1898,7 +1865,24 @@ function parseDatesIntoSeries(dayResults, displayStart, displayEnd) {
       }
       blocks.push(block);
 
-      // Pick the block that has the most overlap with display week
+      // Show the FULL contiguous series block in both week views.
+      //
+      // When a series spans a week boundary — before/after All-Star break,
+      // end-of-season compression, or mid-series makeup games — the entire
+      // series should appear in BOTH the week it started AND the week it
+      // finishes. The slot-state logic (isFuture, isPrefilled, isMissed)
+      // already handles rendering games correctly regardless of which week
+      // they fall in — future games dim naturally, past-locked games show
+      // results, and today's games are open for picking.
+      //
+      // The "best block" selection (most overlap with display week) identifies
+      // the right contiguous series block to use when the same team pair has
+      // games in multiple separate blocks this week (e.g. two distinct series
+      // with a 3+ day gap). We keep that selection but show ALL games in
+      // the chosen block, not just the ones inside the display window.
+      //
+      // Game indices are assigned from the full block so picks keyed by
+      // (series key + game idx) remain stable across both week views.
       const best = blocks.reduce((a, b) => {
         const aOverlap = a.filter(g => g.date >= dsStr && g.date <= deStr).length;
         const bOverlap = b.filter(g => g.date >= dsStr && g.date <= deStr).length;
@@ -2415,6 +2399,14 @@ function renderSeriesCard(series, today, score = null){
             return strandedN > 0 ? `${realTotal}-Game Series` : `${series.totalGames}-Game Series`;
           })()
         }</span>
+        ${(() => {
+          // isContinuation() checks if the series started before this week's Monday.
+          // Calendar logic lives in Series, not in the render function.
+          const weekMondayStr = toDateStr(weekRange(today).start);
+          return series.isContinuation(weekMondayStr)
+            ? '<span class="series-badge continuation-badge">Cont.</span>'
+            : '';
+        })()}
         ${series.isPostseason && series.isPostseason() ? `<span class="series-badge postseason-badge">${
           series.postseasonRound === POSTSEASON_ROUND.WILDCARD     ? '★ Wild Card' :
           series.postseasonRound === POSTSEASON_ROUND.DIVISION     ? `★ ×${series.multiplier()} Division Series` :
@@ -2463,6 +2455,11 @@ function renderSeriesCard(series, today, score = null){
  * Separates wrong picks from missed picks for accurate accuracy calculation.
  * Each game is counted exactly ONCE regardless of how many day rows it appears in.
  *
+ * NOTE: Cross-week series show their full game list in the series card (including
+ * prior-week games), but this function only counts games within dsStr–deStr.
+ * This is intentional — prior-week games are shown for context but should not
+ * inflate pending, correct, or accuracy counts for the current display week.
+ *
  * @param {Series[]} series            — series for the week
  * @param {string}   dsStr             — display week start 'YYYY-MM-DD'
  * @param {string}   deStr             — display week end 'YYYY-MM-DD'
@@ -2470,16 +2467,19 @@ function renderSeriesCard(series, today, score = null){
  *                                       Pass null only when scoreCache is unavailable
  *                                       (degraded path — will re-call computeSeriesScore).
  */
-function computeWeekStats(series, dsStr, deStr, precomputedScores = null){
+function computeWeekStats(series, dsStr, deStr, precomputedScores = null, state = null){
   // precomputedScores: normal path — avoids re-scoring all series on every call.
   // null fallback: degraded path — used only when scoreCache unavailable.
+  // state: injected picks state. Falls back to global AppState for backwards
+  // compatibility — pass explicitly when multiple user states exist (social layer).
+  const st = state || AppState;
   let correct=0, wrong=0, missed=0, pending=0, totalScore=0;
 
   series.forEach(s=>{
     // Use pre-computed score if available — avoids double scoring per render
     const total = (precomputedScores && precomputedScores[s.key] !== undefined)
       ? precomputedScores[s.key]
-      : computeSeriesScore(s, AppState).total;
+      : computeSeriesScore(s, st).total;
     totalScore += total;
     const numDates = s.seriesDates().length;
 
@@ -2493,7 +2493,7 @@ function computeWeekStats(series, dsStr, deStr, precomputedScores = null){
         // (which appear on multiple rows) to be counted multiple times.
         let hadCorrect = false, hadPick = false;
         for(let d = 1; d <= numDates; d++){
-          const p = AppState.getPick(s.key, g.idx, d);
+          const p = st.getPick(s.key, g.idx, d);
           if(p){
             hadPick = true;
             if(g.evaluate(p) === 'correct'){ hadCorrect = true; break; }
@@ -2514,21 +2514,27 @@ function computeWeekStats(series, dsStr, deStr, precomputedScores = null){
     });
   });
 
-  // Accuracy = correct / (correct + wrong) — excludes missed picks
+  // Accuracy = correct / (correct + wrong) — excludes missed picks.
+  // 'missed' (games with no pick made) is intentionally excluded from
+  // accuracy and from the return — it would inflate the denominator and
+  // punish players for games they simply hadn't picked yet, conflating
+  // "no pick" with "wrong pick". It is a distinct outcome but not surfaced
+  // in the UI because it only occurs during live weeks with unpicked games.
   const picked = correct + wrong;
   const pct    = picked > 0 ? Math.round((correct / picked) * 100) : null;
-  return{ correct, wrong, missed, pending, totalScore, pct };
+  return{ correct, wrong, pending, totalScore, pct };
 }
 
 function updateStatsUI(scoreCache = null){
   const _range  = getViewingRange();
   const _dsStr  = toDateStr(_range.start);
   const _deStr  = toDateStr(_range.end);
-  const { correct, wrong, missed, pending, totalScore, pct } = computeWeekStats(ApiCache.series, _dsStr, _deStr, scoreCache);
+  const { correct, wrong, pending, totalScore, pct } = computeWeekStats(ApiCache.series, _dsStr, _deStr, scoreCache);
   const pctStr = pct!=null?`${pct}%`:'—';
 
   document.getElementById('statScore').textContent   = totalScore;
   document.getElementById('statCorrect').textContent = correct;
+  document.getElementById('statWrong').textContent   = wrong;
   document.getElementById('statPending').textContent = pending;
   document.getElementById('statRate').textContent    = pctStr;
   document.getElementById('accFill').style.width     = pct!=null?`${pct}%`:'0%';
@@ -2698,15 +2704,27 @@ function persistWeekScore(scoreCache = null, jackpots = null) {
     ApiCache.series.some(s => s.games.some(g => g.isFinal()));
   if(!hasResults) return;
 
-  const { correct, pending, totalScore } =
+  const { correct, wrong, pending, totalScore } =
     computeWeekStats(ApiCache.series, dsStr, deStr, scoreCache);
   const jackpotTotal = jackpots
     ? (jackpots.superJackpot || jackpots.alJackpot + jackpots.nlJackpot)
     : 0;
   const weekTotal = totalScore + jackpotTotal;
-  if(weekTotal === 0) return;
+  // Save even if score is 0 — a week with all wrong picks is still a real week.
+  // Previously this guard skipped weeks with net-zero scores, losing the record.
+  if(correct === 0 && wrong === 0 && pending === 0) return;
 
-  // Build team stats — which teams were picked for final games this week
+  // Build team stats using IDENTICAL counting logic to computeWeekStats —
+  // same date filter, same "ever correct" evaluation, same missed-pick
+  // exclusion. This ensures the team table totals always agree with the
+  // weekly summary row (correct + wrong = games tracked by team table ==
+  // correct + wrong tracked by computeWeekStats).
+  //
+  // Key rules matching computeWeekStats:
+  //   - Only final games within the display week date range
+  //   - "ever correct" across any day row = correct (not just final pick)
+  //   - No pick on any day = missed, excluded from team stats entirely
+  //   - Wrong only when a pick existed AND was never correct on any day
   const teamStats = {};
   ApiCache.series.forEach(s => {
     const numDates = s.seriesDates().length;
@@ -2714,30 +2732,35 @@ function persistWeekScore(scoreCache = null, jackpots = null) {
       if(!g.isFinal() || g.date < dsStr || g.date > deStr) return;
       const winner = g.winnerSide();
       if(!winner) return;
-      // Use the FINAL pick (last day with a pick), not the first one found —
-      // consistent with analysePickHistory.finalPick, which is what the
-      // scoring engine treats as "your actual pick" for this game. Using the
-      // first pick found here would attribute the stat to a team the user
-      // switched away from, corrupting the season Team Results table.
-      let pickedAbbr = null, wasCorrect = false;
-      for(let d = numDates; d >= 1; d--){
+
+      // Find the team that was picked (use final/last pick for attribution)
+      // and whether the pick was ever correct (matches computeWeekStats logic)
+      let pickedAbbr = null, hadCorrect = false, hadPick = false;
+      for(let d = 1; d <= numDates; d++){
         const p = AppState.getPick(s.key, g.idx, d);
         if(p){
+          hadPick = true;
+          // Use the LAST pick found as the team to attribute the stat to
           pickedAbbr = p === PICK.AWAY
             ? (s.away.abbr || teamAbbr(s.away.name))
             : (s.home.abbr || teamAbbr(s.home.name));
-          wasCorrect = p === winner;
-          break;
+          if(g.evaluate(p) === 'correct') hadCorrect = true;
         }
       }
-      if(!pickedAbbr) return;
+
+      // No pick on any day = missed — exclude from team stats entirely,
+      // exactly as computeWeekStats excludes missed games from accuracy.
+      if(!hadPick) return;
+
       if(!teamStats[pickedAbbr]) teamStats[pickedAbbr] = { picked:0, correct:0 };
       teamStats[pickedAbbr].picked++;
-      if(wasCorrect) teamStats[pickedAbbr].correct++;
+      if(hadCorrect) teamStats[pickedAbbr].correct++;
     });
   });
 
-  AppState.saveWeekScore(weekKey, weekTotal, correct, correct + pending, teamStats, jackpots);
+  // games = correct + wrong + pending — all picked games, not just correct ones.
+  // wrong was previously excluded, making accuracy always appear 100%.
+  AppState.saveWeekScore(weekKey, weekTotal, correct, correct + wrong + pending, teamStats, jackpots);
 }
 
 function renderGrid(){
@@ -2896,26 +2919,6 @@ function onLockClick(e){
 
 function attachAllHandlers(){
   document.querySelectorAll('.series-card').forEach(card=>attachHandlers(card));
-}
-
-/* ═══════════════════════════════════════════
-   STREAM MODE
-═══════════════════════════════════════════ */
-let streamModeActive = false;
-
-function toggleStreamMode() {
-  streamModeActive = !streamModeActive;
-  document.body.classList.toggle('stream-mode', streamModeActive);
-  const btn       = document.getElementById('btnStream');
-  const indicator = document.getElementById('streamIndicator');
-  if(btn)       btn.classList.toggle('is-active', streamModeActive);
-  if(indicator) indicator.style.display = streamModeActive ? 'flex' : 'none';
-  // Persist across sessions
-  try { localStorage.setItem('30d_streamMode', streamModeActive ? '1' : '0'); } catch{}
-}
-
-function initStreamMode() {
-  try { if(localStorage.getItem('30d_streamMode') === '1') toggleStreamMode(); } catch{}
 }
 
 /* ═══════════════════════════════════════════
@@ -3172,9 +3175,13 @@ async function init(){
   const nextBtn=document.getElementById('weekNext');
   if(nextBtn) nextBtn.disabled = viewingWeekOffset === 0;
 
-  // Fetch exactly the display week — Mon through Sun.
-  // Series that started prior week are not surfaced; ESPN groups by event date.
-  const fetchStart = range.start;
+  // Fetch 7 days before the display week start through Sunday, so cross-week
+  // series (before/after All-Star break, end-of-season makeups) include their
+  // full prior-week games in the API response. parseDatesIntoSeries still
+  // filters display to the actual Mon–Sun window — the wider fetch only
+  // ensures prior-week games are present in raw.games for the block-splitter
+  // to include in the full series card shown in both weeks.
+  const fetchStart = shiftDays(range.start, -7);
   const fetchEnd   = range.end;
 
   // Step 1 — fetch schedule
@@ -3238,7 +3245,6 @@ document.addEventListener('visibilitychange',()=>{
 });
 setInterval(checkRollover, 5*60*1000);
 
-initStreamMode();
 init();
 
 /* ═══════════════════════════════════════════
@@ -3886,5 +3892,6 @@ init();
   pass.forEach(p => console.log(' ✓', p));
 })();
 </script>
+<footer class="disclaimer">Independent fan prediction app — not affiliated with or endorsed by MLB or any team. &nbsp;·&nbsp; <a href="/legal" style="color:inherit;opacity:0.7;text-decoration:none">Terms &amp; Privacy</a></footer>
 </body>
 </html>
